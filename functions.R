@@ -258,8 +258,12 @@ sendProbes <- function(ship){
   if(NROW(nearbyplanet)==0){
     warning('Not near a planet, cannot send probes');
     return()};
+  if(nearbyplanet$visited == 2){
+    warning('No probes sent because ',ship$name, ' already sent probes to this planet');
+    return(nearbyplanet$info[[1]]);
+  }
   if(ship$probes < 1){
-    warning('Ship has run out of probes!');
+    warning('No probes sent because ',ship$name,' has run out of probes!');
     return();
   }
   # get the accurate planet info
@@ -278,6 +282,7 @@ sendProbes <- function(ship){
 # The higher the eventweight, the fewer events. Think of it as the ship speed--
 # the faster it goes, the less chance of running into events
 moveShip <- function(ship, target,eventweight=4) {
+  # TODO: if called from nudgeShip don't scan and maybe abbreviated log
   if(missing(target)){
     if(is.null(ship$lastdestination)){
       warning('No previous destination set. ',ship$name,' remains where it is.');
