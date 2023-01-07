@@ -545,7 +545,7 @@ foo <- newShip();
 # to get a 3d starmap
 ids <- rglStarChart(foo);
 # ids can then be used to catch mouse clicks
-moveShip(foo,rglCoordCapture(ids));ids<-rglStarChart(foo);
+moveShip(foo,suppressWarnings(rglCoordCapture(ids)));ids<-rglStarChart(foo);
 # To keep moving after event interruption...
 moveShip(foo);ids<-rglStarChart(foo);
 promptNav(foo);
@@ -559,6 +559,13 @@ promptNav(foo);
 
 # if stops on event:
 # do event and then...
+# What does it mean to 'do' an event?
+# 1. Present node text.
+# 2. If effects present, run code to apply them
+# 2a. If manual choices, present them and collect user input.
+# 2b. If random choices, run code to select.
+# ... repeat at next node
+# ...when completing leaf node: just exit and maybe set state to 'space'
 #foo <- moveShip(foo,.target);
 # if stops on planet:
 # then choose whether to send probes, colonize, or moveShip again.
