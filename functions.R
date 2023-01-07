@@ -1,9 +1,12 @@
 library(dplyr);
 library(stringr);
 library(rgl);
+library(rio);
 
 # global params ----
 statnames <- c('atmosphere','gravity','temperature','water','resources');
+
+anomalies <- import('anomalies.tsv');
 
 planetparams <- list(
   atmosphere = c("Breathable", "Marginal", "Non-breathable", "Toxic", "Corrosive", "No atmosphere")
@@ -79,7 +82,7 @@ with.staRship <- function(data,expr,...){
   expr <- substitute(expr);
   with.default(mget(ls(data),data),eval(expr),...)};
 
-formatCoords <- function(coords,template='("%s")',sep='", "',numformat='%.9f'){
+formatCoords <- function(coords,template='("%s")',sep='", "',numformat='%.3f'){
   sprintf(template,paste0(sprintf(numformat,coords),collapse=sep))};
 
 # conditionalUpdate <- function(data,valname,oldsuffix='_sensor',newsuffix='_sensor_current',finalsuffix='_sensor_final',infocol='info'){
@@ -191,6 +194,9 @@ rglStarChart <- function(ship,size=5,herecol='orange',...){
   # calculate rr, the distance at which the currently best sensor's accuracy drops to 0.
   rr <- sapply(sensorlevels,sensorMaxRange) %>% max(na.rm=T);
   spheres3d(ship$coords[1],ship$coords[2],ship$coords[3],col='lightgreen',alpha=0.2,radius=rr);
+  # TODO: planets can actually be plotted using spheres3d and given a texture argument which 
+  #       points to a path to a .png file. Type = 'rgb' or 'rgba' or 'luminance' or 'alpha'
+  # 
   with(ship$log,lines3d(x=x,y=y,z=z,col='blue'));
   if(!is.null(ship$lastdestination)){
     points3d(x=ship$lastdestination[[1]],y=ship$lastdestination[[2]],z=ship$lastdestination[[3]],size=size*1.5,color='green')};
@@ -206,6 +212,15 @@ rglCoordCapture <- function(rglids){
   out[-1,]; 
 }
 
+parseVectorStrings <- function(xx,match=c()){
+  sapply(xx,function(xx) eval(parse(text=paste0('c(',xx,')'))),simplify=F) %>% 
+    sapply(function(xx) if(is.null(xx)) 1 else prod(xx[intersect(names(xx),match)]));
+}
+
+nudgeShip <- function(ship,tolerance=1e6){
+  almosthere <- prepStarChart(ship) %>% filter(distance>0 & distance < 1e-6);
+  if(NROW(almosthere)==0) return();
+  moveShip(ship,almosthere[1,c('x','y','z')])};
 
 # big functions ----
 newShip <- function(...) {
@@ -237,6 +252,31 @@ newShip <- function(...) {
 };
 
 
+sendProbes <- function(ship){
+  nudgeShip(ship);
+  nearbyplanet <- prepStarChart(ship,NA) %>% filter(distance==0);
+  if(NROW(nearbyplanet)==0){
+    warning('Not near a planet, cannot send probes');
+    return()};
+  if(ship$probes < 1){
+    warning('Ship has run out of probes!');
+    return();
+  }
+  # get the accurate planet info
+  fullplanetinfo <- right_join(planetGlobalDB,nearbyplanet[,c('x','y','z')])$info[[1]];
+  # but only the anomaly and code fields are needed... now the more accurate ones
+  fullplanetinfo$anomalies <- transmute(fullplanetinfo$anomalies,anomaly=details,code=code);
+  # overwrite the old planet info with the new in the ship database
+  ship$planetLocalDB[with(ship$planetLocalDB,x==nearbyplanet$x,y==nearbyplanet$y,z==nearbyplanet$z),'info'][[1]] <- list(fullplanetinfo);
+  ship$planetLocalDB[with(ship$planetLocalDB,x==nearbyplanet$x,y==nearbyplanet$y,z==nearbyplanet$z),'visited'] <- 2L;
+  ship$probes <- ship$probes - 1;
+  shipLog('${name} has sent probes to explore a new planet. ${probes} remain.',tags='probes');
+  # TODO: come up with a more dramatic exposition when planet anomalies are done
+  return(fullplanetinfo);
+}
+
+# The higher the eventweight, the fewer events. Think of it as the ship speed--
+# the faster it goes, the less chance of running into events
 moveShip <- function(ship, target,eventweight=4) {
   if(missing(target)){
     if(is.null(ship$lastdestination)){
@@ -332,14 +372,19 @@ navigateEvent <- function(eventData) {
   }
 }
 
-generateAnomaly <- function() {
-  event_id_options <- c("Moon", "Plant life", "Animal life", "Possible structures", "Geological", "Electromagnetic activity", "Alien Observers", "Simulation")
-  event_id_probs <- c(1, 0.9, 0.9, 0.7, 0.7, 0.4, 0.1, 0.1)
-  event_id <- sample(event_id_options, 1, prob = event_id_probs)
-  
-  visibility <- ifelse(event_id == "Moon", 1, sample(c(0, 1), 1))
-  
-  data.frame(eventID = event_id, visibility = visibility, stringsAsFactors = FALSE)
+generateAnomaly <- function(planetinfo,anomdata=anomalies) {
+  planetstats<-planetinfo[c('water','atmosphere','gravity','temperature','resources')] %>% unlist %>% gsub(' ','_',.);
+  planettags <- planetinfo$anomalies$tags; if(is.null(planettags)) planettags <- '';
+  anomdata <- mutate(anomdata
+                     # convert statprobs to numeric vectors, filter by values, and get aggregate planet-specific probability modifier
+                     ,statprobs=parseVectorStrings(statprobs,planetstats)
+                     # same but use tags (currently, from previous anomalies) instead of planet statistic values
+                     ,tagprobs=parseVectorStrings(tagprobs,planetinfo$anomalies$tags)
+                     # TODO: one of these for planet numeric statistics
+                     # the the final probability by multiplying base probability by the two modifiers
+                     ,finalprob=baseprob*statprobs*tagprobs
+                     )
+  anomaly <- anomdata[sample(seq_len(nrow(anomdata)), 1, prob = anomdata$finalprob),];
 }
 
 
@@ -359,15 +404,19 @@ generatePlanet <- function(maxAnomalies=9
   
   # Set the number of times to call the generateAnomaly function
   num_anomalies <- sample(0:maxAnomalies, 1);
-  
-  # Call the generateAnomaly function and combine the results into a single data frame
-  #if(num_anomalies==0) 
-    #browser();
-  out$anomalies <- replicate(num_anomalies,generateAnomaly(),simplify=F) %>% 
-    c(list(data.frame(eventID=character(0),visibility=logical(0))),.) %>% 
-    bind_rows %>% group_by(eventID) %>% 
-    # Filter the anomalies data frame to remove duplicate eventID values
-    filter(row_number() == 1 | !(eventID %in% uniqueFeatures)) %>% ungroup();
+  # We loop over them the old fashioned way because each anomaly alters the probabilities
+  # of subsequent anomalies
+  out$anomalies <- data.frame(anomaly=character(0),code=character(0));
+  while(NROW(out$anomalies)<=num_anomalies) out$anomalies <- rbind(out$anomalies,generateAnomaly(out));
+  out$anomalies <- unique(out$anomalies);
+  # Set the actual visibilities for this planet's instances of the anomalies
+  out$anomalies$visibility <- 1*(runif(NROW(out$anomalies))>out$anomalies$p_hidden);
+  # TODO: instead of the below, just use tags for one-of-a-kind anomalies
+  # out$anomalies <- replicate(num_anomalies,generateAnomaly(out),simplify=F) %>% 
+  #   c(list(data.frame(eventID=character(0),visibility=logical(0))),.) %>% 
+  #   bind_rows %>% group_by(eventID) %>% 
+  #   # Filter the anomalies data frame to remove duplicate eventID values
+  #   filter(row_number() == 1 | !(eventID %in% uniqueFeatures)) %>% ungroup();
 
   # Replace default values with specified values if they are provided
   for(ii in names(args)) out[[ii]] <- args[[ii]];
@@ -469,7 +518,8 @@ scanPlanets <- function(ship){
     #     planets2[currentPlanet,'info'][[1]][[1]]$anomalies <- planets2[currentPlanet,'info_global'][[1]][[1]]$anomalies %>% filter(visibility==1);
     currentPlanetInfo <- planets2[currentPlanet,'info'][[1]];
     pdesc <- currentPlanetInfo$description <- planets2[currentPlanet,'info_global'][[1]]$description;
-    currentPlanetInfo$anomalies <- planets2[currentPlanet,'info_global'][[1]]$anomalies %>% filter(visibility==1);
+    currentPlanetInfo$anomalies <- planets2[currentPlanet,'info_global'][[1]]$anomalies %>% 
+      filter(visibility==1) %>% select(all_of(c('anomaly','code'))) %>% mutate(code=NA);
     planets2[currentPlanet,'info'][[1]]<- list(currentPlanetInfo);
     #  Select the anomalies from the corresponding planetGlobalDB info entry such that visibility > 0, and use the resulting data.frame to populate the anomalies of the current planetLocalDB info entry. 
     shipLog(paste0('${name} is orbiting: \n',pdesc),tags='starsystem');
@@ -487,14 +537,12 @@ planetReport <- function(ship){
 
 foo <- newShip();
 # basic event-loop sketch ----
-.target <- prepStarChart(foo)[1,c('x','y','z')];
-moveShip(foo,.target);
 # to get a 3d starmap
 ids <- rglStarChart(foo);
 # ids can then be used to catch mouse clicks
-selectpoints3d(ids['data'],multiple=function(x){
-  print(x); spheres3d(x,color='red',alpha=.3,radius=.2); TRUE});
-# to interactively get info about planets or select destinations, do...
+moveShip(foo,rglCoordCapture(ids));ids<-rglStarChart(foo);
+# To keep moving after event interruption...
+moveShip(foo);ids<-rglStarChart(foo);
 promptNav(foo);
 
 
