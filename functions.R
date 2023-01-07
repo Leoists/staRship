@@ -186,20 +186,28 @@ or "r" to resume traveling to an existing destination.');
 }
 
 rglStarChart <- function(ship,size=5,herecol='orange',...){
-  data <- prepStarChart(ship,NA);
-  rglids<-with(data,plot3d(x=x,y=y,z=z,size=size));
+  data <- prepStarChart(ship,NA)[,c('x','y','z')];
+  ngrid <-apply(data,2,function(xx) c(range(xx),median(range(xx)))) %>% as.data.frame() %>% expand.grid();
+  #ngrid <- expand.grid(x=c(-1:1),y=c(-1:1),z=c(-1:1)) + c(ship$coords) %>% setNames(c('x','y','z'));
+  combineddata <- rbind(data,ngrid);
+  rglids<-with(combineddata,plot3d(x=x,y=y,z=z,size=1,alpha=0.1));
+  with(data,points3d(x=x,y=y,z=z,size=size,alpha=1,color='black'));
+  with(ngrid,points3d(x=x,y=y,z=z,col='purple',size=8,alpha=0.2));
   points3d(x=ship$coords[1],y=ship$coords[2],z=ship$coords[3],size=size*2,color=herecol);
   sensornames <- grep('_sensor$',names(ship),val=T);
   sensorlevels <- mget(sensornames,ship);
   # calculate rr, the distance at which the currently best sensor's accuracy drops to 0.
   rr <- sapply(sensorlevels,sensorMaxRange) %>% max(na.rm=T);
+  # navigation grid, to travel toward empty space if there are no visible planets
+  #points3d(ngrid,col='purple',size=3,alpha=0.5);
   spheres3d(ship$coords[1],ship$coords[2],ship$coords[3],col='lightgreen',alpha=0.2,radius=rr);
   # TODO: planets can actually be plotted using spheres3d and given a texture argument which 
   #       points to a path to a .png file. Type = 'rgb' or 'rgba' or 'luminance' or 'alpha'
   # 
-  with(ship$log,lines3d(x=x,y=y,z=z,col='blue'));
+  with(ship$log,lines3d(x=x,y=y,z=z,col='blue',lwd=2));
   if(!is.null(ship$lastdestination)){
     points3d(x=ship$lastdestination[[1]],y=ship$lastdestination[[2]],z=ship$lastdestination[[3]],size=size*1.5,color='green')};
+  bg3d(fogtype='linear',fogScale=1.3,color='white');
   rglids;
 }
 
@@ -234,6 +242,7 @@ newShip <- function(...) {
     ,coords = c(0, 0, 0)
     ,state = 'space'
     ,name = 'Earthseed'
+    ,traveled = 0
     ,planetLocalDB = data.frame(
       x = numeric(0), y = numeric(0), z = numeric(0),
       visited = integer(0), info = character(0),
@@ -310,10 +319,12 @@ moveShip <- function(ship, target,eventweight=4) {
   # Update ship's coords and state
   if(ss < rr){
     ship$coords <- ship$coords + displacement; ship$state <- 'event';
+    ship$traveled <- ship$traveled + ss;
     shipLog(preset='event');
     scanPlanets(ship);
   } else {
     ship$coords <- target; ship$state <- 'space';
+    ship$traveled <- ship$traveled + rr;
     shipLog(preset='arrive',tags='auto');
     ship$lastdestination <- NULL;
     scanPlanets(ship);
