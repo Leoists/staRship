@@ -1,0 +1,37 @@
+name	effect	baseprobability	tagmods	dynmods	text
+Unsuitable	no effect				
+False Alarm	no effect				
+False Alarm 2	no effect				
+Hibernating	no effect				
+Hibernating 2	no effect				
+Star Cluster	no effect				
+Overheat	choice of damage				
+Radiation Alert	choice of damage				
+Overwhelmed	choice of damage				
+Nanoplague	choice of damage				
+Guidance Query	choice of damage				
+Interstellar Dust	choice of damage				
+Comet	choice of damage				
+Racist Program	choice of damage				
+0Revisionist Program	choice of damage				
+1Rogue Asteroid	choice of damage				
+2Black Hole	choice of damage				
+Power Failure	device decay				
+Structural Weakness	device decay				
+Database decay	device decay				
+Landing/Construction Decay	device decay				
+Deteriorating Scanners	device decay				
+Rogue Probe	device decay				
+Study	risk reward				
+Protoplanetary Disk	risk reward				
+Support Drone (Repair)	risk reward				
+Support Drone (Data)	risk reward				
+Stowaways	risk reward				
+Upgrades	other				
+Micrometeorite	other				
+Dictator Chamber	other				
+Metallic Asteroid	other				
+Unusual Astronomical Readings	other				
+Spacefaring Civilisation	other				
+Planetary Communications	other				
+Perfect Planet	other				
