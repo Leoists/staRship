@@ -116,10 +116,10 @@ construction equipment: ${equipment}'
   # Presets automate creation of frequently ocurring log messages.
   switch(preset
          ,depart={
-           description<-'${name} departs from ${coords}';
+           description<-'${name} departs from $[.3f]{coords}';
            tags<- c(tags,'transit')}
          ,arrive={
-           description<-'${name} arrives at ${coords}';
+           description<-'${name} arrives at $[.3f]{coords}';
            tags<- c(tags,'arrival')}
          ,event={
            description<-'${name} experiences an event';
@@ -149,6 +149,7 @@ promptPlanet <- function(ship){
 prepStarChart <- function(ship,cols=c('distance','dst','x','y','z','visited'
                                        ,"atmosphere", "gravity", "temperature"
                                        ,"water", "resources")){
+  if(NROW(ship$planetLocalDB)==0) scanPlanets(ship);
   knownsystems <- ship$planetLocalDB;
   knownsystems$distance <- p3Distance(knownsystems[,c('x','y','z')],ship$coords);
   knownsystems <- arrange(knownsystems,distance) %>%
@@ -187,7 +188,7 @@ or "r" to resume traveling to an existing destination.');
 
 rglStarChart <- function(ship,size=5,herecol='orange',...){
   data <- prepStarChart(ship,NA)[,c('x','y','z')];
-  ngrid <-apply(data,2,function(xx) c(range(xx),median(range(xx)))) %>% as.data.frame() %>% expand.grid();
+  ngrid <-apply(data,2,function(xx) c(range(xx)+c(-1,1),median(range(xx)))) %>% as.data.frame() %>% expand.grid();
   #ngrid <- expand.grid(x=c(-1:1),y=c(-1:1),z=c(-1:1)) + c(ship$coords) %>% setNames(c('x','y','z'));
   combineddata <- rbind(data,ngrid);
   rglids<-with(combineddata,plot3d(x=x,y=y,z=z,size=1,alpha=0.1));
@@ -217,7 +218,7 @@ rglCoordCapture <- function(rglids){
     print(xx);
     thisenv$out <- rbind(thisenv$out,xx);
   });
-  out[-1,]; 
+  out[2,]; 
 }
 
 parseVectorStrings <- function(xx,match=c()){
@@ -225,10 +226,100 @@ parseVectorStrings <- function(xx,match=c()){
     sapply(function(xx) if(is.null(xx)) 1 else prod(xx[intersect(names(xx),match)]));
 }
 
-nudgeShip <- function(ship,tolerance=1e6){
-  almosthere <- prepStarChart(ship) %>% filter(distance>0 & distance < 1e-6);
+nudgeShip <- function(ship,tolerance=1e-5){
+  almosthere <- prepStarChart(ship) %>% filter(distance>0 & distance < tolerance);
   if(NROW(almosthere)==0) return();
-  moveShip(ship,almosthere[1,c('x','y','z')])};
+  shipLog(str_interp("Minor orbital correction to $[.5f]{almosthere[1,c('x','y','z')]}"));
+  moveShip(ship,almosthere[1,c('x','y','z')],dologs=F,doscans=F)};
+
+damageShip <- function(ship,max_systems=3
+                       # all of these arguments can be named vectors with one
+                       # item named 'default'. In those cases, damageable items
+                       # matching a name get that value, the rest get the 
+                       # default value. If there is no default specified,
+                       # 0, 10, and 1 are used for min_damage, max_damage, and 
+                       # probs, respectively. You can also set min_damages to 
+                       # negative and max_damage to 0, so use this function to
+                       # undo damage (i.e. repair or improve) the ship. Or set
+                       # min_damage to negative and max_damage to positive if
+                       # it might go either way.
+                       ,min_damage=0,max_damage=10,probs=1
+                       ,damageable=c('planetLocalDB','probes','landing_gear'
+                                    ,'equipment','dbase','colonists'
+                                    ,'resources_sensor','temperature_sensor'
+                                    ,'gravity_sensor','atmosphere_sensor'
+                                    ,'water_sensor','colonists')
+                       ){
+  # number of different systems damaged
+  n_systems <- sample(1:min(max_systems,length(damageable)),1);
+  n_actual_systems <- 
+  # Expand min_damage argument to the length of damageable. If no values named 
+  # 'default', use 0. Then overwrite any matching named values.
+  if(!is.null(names(min_damage))){
+    instance_min_damage <- replicate(length(damageable),coalesce(min_damage['default'],0)) %>% 
+      setNames(damageable);
+    instance_min_damage <- intersect(damageable,names(min_damage)) %>% 
+      {instance_min_damage[.] <- min_damage[.]; instance_min_damage};
+  } else {
+    if(length(min_damage)>1 & length(min_damage) < length(damageable)) warning('In damageShip() the length of the min_damage argument is > 1 without specifying any system names. Will use the first value and ignore all the rest.');
+    instance_min_damage <- replicate(length(damageable),min_damage) %>% setNames(damageable);
+  };
+  # Do the same for max_damage, using 10 if default missing.
+  if(!is.null(names(max_damage))){
+    instance_max_damage <- replicate(length(damageable),coalesce(max_damage['default'],10)) %>% 
+      setNames(damageable);
+    instance_max_damage <- intersect(damageable,names(max_damage)) %>% 
+      {instance_max_damage[.] <- max_damage[.]; instance_max_damage};
+  } else {
+    if(length(max_damage)>1 & length(max_damage) < length(damageable)) warning('In damageShip() the length of the max_damage argument is > 1 without specifying any system names. Will use the first value and ignore all the rest.');
+    instance_max_damage <- replicate(length(damageable),max_damage) %>% setNames(damageable);
+  };
+  if(any(instance_max_damage < instance_min_damage)){
+    stop('In the damageShip() function, the min_damage and max_damage were specified such that the max_damage was lower than the min_damage.')};
+  # Do the same for probs, using 1 if default missing
+  if(!is.null(names(probs))){
+    instance_probs <- replicate(length(damageable),coalesce(probs['default'],1)) %>% 
+    setNames(damageable);
+    instance_probs <- intersect(damageable,names(probs)) %>% 
+      {instance_probs[.] <- probs[.]; instance_probs};
+  } else {
+    if(length(probs)>1 & length(probs) < length(damageable)) warning('In damageShip() the length of the probs argument is > 1 without specifying any system names. Will use the first value and ignore all the rest.');
+    instance_probs <- replicate(length(damageable),probs) %>% setNames(damageable);
+  };
+  # sample the actual systems that will be damaged from damageable using probs
+  # for each system, roll damage using its min_damage, max_damage
+  damaged <- sample(damageable,n_systems,prob=instance_probs) %>% 
+    {.x <- (.); 
+    runif(length(.x),instance_min_damage[.x],instance_max_damage[.x]) %>% 
+      setNames(.x)};
+  # if probes is one of the systems damaged, set damage to 1
+  if('probes' %in% names(damaged)) damaged['probes'] <- sign(damaged['probes']);
+  # if planetLocalDB is damaged, calculate damage as a fraction of its max_damage
+  # and randomly remove that fraction of entries from planetLocalDB
+  if('colonists' %in% names(damaged)) damaged['colonists'] <- round(damaged['colonists']);
+  if('planetLocalDB' %in% names(damaged)){
+    .planetLocalDBdmg <- pmin(damaged['planetLocalDB']/instance_max_damage['planetLocalDB'],1);
+    if(.planetLocalDBdmg>0){
+      ship$planetLocalDB <- slice_sample(ship$planetLocalDB
+                                         , prop=1-.planetLocalDBdmg);
+      shipLog(str_interp('The planet database was damaged and lost $[.2f]{.planetLocalDBdmg*100} of its data')
+              ,tags='damage');
+    }
+    damaged <- damaged[c(setdiff(names(damaged),'planetLocalDB'))];
+  };
+  damaged <- damaged[damaged!=0];
+  # for the other systems, subtract the damage from their current values and 
+  if(length(damaged)>0){
+    for(ii in names(damaged)){
+      ship[[ii]] <- pmax(ship[[ii]] - damaged[ii],0);
+      if(damaged[ii]>0){
+        shipLog(str_interp('Damage to ${ii}: $[.2f]{damaged[ii]}'),tags='damage');
+      } else {
+        shipLog(str_interp('Improvement to ${ii}: $[.2f]{damaged[ii]}'),tags='upgrade');
+      }
+    }
+  };
+}
 
 # big functions ----
 newShip <- function(...) {
@@ -290,7 +381,7 @@ sendProbes <- function(ship){
 
 # The higher the eventweight, the fewer events. Think of it as the ship speed--
 # the faster it goes, the less chance of running into events
-moveShip <- function(ship, target,eventweight=4) {
+moveShip <- function(ship, target,eventweight=4,dologs=T,doscans=T) {
   # TODO: if called from nudgeShip don't scan and maybe abbreviated log
   if(missing(target)){
     if(is.null(ship$lastdestination)){
@@ -314,20 +405,20 @@ moveShip <- function(ship, target,eventweight=4) {
   # Calculate displacement vector by multiplying unit vector by ss
   displacement <- unit_vector * ss;
   
-  shipLog(target=target,preset = 'depart',tags='auto');
+  if(dologs) shipLog(target=target,preset = 'depart',tags='auto');
   
   # Update ship's coords and state
   if(ss < rr){
     ship$coords <- ship$coords + displacement; ship$state <- 'event';
     ship$traveled <- ship$traveled + ss;
-    shipLog(preset='event');
-    scanPlanets(ship);
+    if(dologs) shipLog(preset='event');
+    if(doscans) scanPlanets(ship);
   } else {
     ship$coords <- target; ship$state <- 'space';
     ship$traveled <- ship$traveled + rr;
-    shipLog(preset='arrive',tags='auto');
+    if(dologs) shipLog(preset='arrive',tags='auto');
     ship$lastdestination <- NULL;
-    scanPlanets(ship);
+    if(doscans) scanPlanets(ship);
   };
 
   # return updated object
