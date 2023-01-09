@@ -2,6 +2,7 @@ library(dplyr);
 library(stringr);
 library(rgl);
 library(rio);
+library(data.tree);
 
 # global params ----
 statnames <- c('atmosphere','gravity','temperature','water','resources');
@@ -18,6 +19,54 @@ planetparams <- list(
 
 # initialize the global planet database
 planetGlobalDB <- data.frame(x=numeric(0),y=numeric(0),z=numeric(0),info=I(list()));
+
+
+# code for event-tree
+
+repair_drone <- Node$new('repair_drone',description=function(ship,node,...) 'A probe from your homeworld finally caught up with you. It is offering to perform repairs',decideOutcome=function(ship,thisnode,nextnode,...){browser()})
+repair_drone$AddChild('Ignore the message from the probe',description='You ignore the message from the probe and maintain course',finish=T)
+repair_drone$AddChild('Rendezvous with the probe',description=function(ship,node,...) {browser()},decideOutcome=function(ship,thisnode,netnode,...) {browser()},finish=T)
+# more ambitious event-tree
+test_event <- Node$new('test_event'
+  ,description=function(ship,node,...){
+    # find nearest planet
+    nearestplanet <- prepStarChart(ship,NA) %>% subset(distance==min(distance));
+    # we're going to refer to this planet later on in the event, so record it in
+    # the ship's eventcache 
+    ship$eventcache$nearestplanetcoords <- nearestplanet[,c('x','y','z')];
+    # randomly choose the type of message to receive
+    messagetype <- sample(c('simple_message','complex_message','noisy_message'),1);
+    messageintent <- sample(c('hostile','friendly'),1);
+    ship$eventtags[[paste0(messagetype,'_',messageintent)]] <- 1;
+    messagetypedisplay <- switch (
+      messagetype
+      ,simple_message = '  starts with a sequence of prime numbers, then some universal mathematical constants, eventually working its way up to the basics of decoding the language of its authors'
+      ,complex_message = ' is clearly artificial and and intended to convey information. However it is so alien and complex that you cannot decode most of it'
+      ,noisy_message = ' is clearly artificial and and intended to convey information but is fragmented and corrupted so you only get a few snippets of contiguous data'
+    );
+    # randomly roll whether to append a hostile or friendly intent, or nothing at all.
+    # the probability of the wrong interpretation is higher for complex message and of a missing interpretation if higher for a noisy message
+    # use valueModFromTags() for this
+    # make a message with interpolated values 
+    out <-
+"After taveling ${10*ship$traveled} light year, the ${name} detects a 
+transmission coming from a system at ${formatCoords(ship$eventcache$nearestplanetcoords)}.
+It ${messagetypedisplay}."
+    str_interp(out) %>% str_wrap(width = 80);
+  }
+  ,decideChoices(ship,node,...){
+    out <- thisnode$children;
+    # generate a dynamic choice
+    # randomly remove one of the choices
+  }
+  ,decideOutcome(ship,node,...){
+    browser();
+    # add permanent tags to ship
+    # modify the nearest planet to have a high-tech civ
+    # tag that planet hostile or friendly
+  }
+);
+
 
 # small helper functions ----
 
@@ -41,6 +90,53 @@ p3Distance.matrix <- p3Distance.data.frame;
 # distances relative to a set of coordinates
 withinDist <- function(coords,maxd,mind=0,db=planetGlobalDB,coordnames=c('x','y','z')){
   filter(db,between(p3Distance(db[,coordnames],coords),mind,maxd))};
+
+stringToNameVal <- function(xx,outersep=',',innersep='=',valtransform=as.numeric,nameformat=str_trim,format=identity){
+  str_split_1(xx,outersep) %>% str_split(innersep) %>%
+    sapply(function(yy) setNames(as.numeric(yy[2]),nameformat(yy[1]))) %>% 
+    format;
+}
+
+# ... is a series of atomic name-value pairs alternatively
+# the newtags argument can be used with a named vector,
+# or both
+# updateTags will check for each name in obj[[taglist]]
+# if it doesn't exist, it initializes it to that 
+# tags's value, if it exists, it adds that tag's value
+# unless the modfun is set to some other binary 
+# operator than `+` in which case it uses that
+# limits sets the cap on the number of tag instances
+updateTags <- function(taglist,mod=`+`,limits=c(0,Inf),newtags=c(),trimzeros=T,...){
+  if(is.null(names(newtags)) && length(newtags)==1 && 
+     is.character(newtags) && grepl('=',newtags)){
+    newtags <- stringToNameVal(newtags)};
+  newtags <- c(as.list(newtags),list(...));
+  if(is.null(names(newtags))) return(taglist);
+  for(ii in intersect(names(newtags),names(taglist))){
+    taglist[[ii]] <- mod(taglist[[ii]],newtags[[ii]])};
+  for(ii in setdiff(names(newtags),names(taglist))){
+    taglist[[ii]] <- newtags[[ii]]};
+  taglist <- lapply(taglist,function(xx) pmin(pmax(xx,limits[1]),limits[2]));
+  if(trimzeros) taglist <- Filter(function(xx) xx!=0,taglist);
+  return(taglist);
+};
+
+# weights is a named vector of how much each occurrence 
+# of a tag will influence the base value. 
+# For example c(ugly = 2,pretty=0.5) each occurrence of
+# an ugly tag doubles the baseline value while each 
+# occurence of a pretty tag halves it. Tags is a named
+# vector of tag occurences. For example, c(ugly=1,pretty=2)
+# represents one 'ugly' tag and two 'pretty' tags. A 
+# different binary operator can be specified in mod so that 
+# additional instances of a tag have an e.g. additive 
+# effect. Likewise aggmod-- except that one needs to be a
+# function that takes a numeric vector and returns a scalar
+valueModFromTags <- function(weights,tags,mod=`^`,aggmod=prod){
+  tagnamesfound <- intersect(names(weights),names(tags));
+  if(length(tagnamesfound)==0) return(1);
+  aggmod(mod(weights[tagnamesfound],tags[tagnamesfound]));
+}
 
 extractPlanetInfo <- function(infocol){
   sapply(infocol,function(xx) {
@@ -339,7 +435,11 @@ newShip <- function(...) {
       visited = integer(0), info = character(0),
       water_sensor = numeric(0), atmosphere_sensor = numeric(0),
       gravity_sensor = numeric(0), temperature_sensor = numeric(0),
-      resources_sensor = numeric(0), stringsAsFactors = FALSE));
+      resources_sensor = numeric(0), 
+      first_visited = as.POSIXct(NULL), last_visited = as.POSIXct(NULL),
+      probed = as.POSIXct(NULL),
+      stringsAsFactors = FALSE)
+    );
   
   # Evaluate named arguments and insert them into output
   for (ii in names(args)) {
@@ -373,6 +473,7 @@ sendProbes <- function(ship){
   # overwrite the old planet info with the new in the ship database
   ship$planetLocalDB[with(ship$planetLocalDB,x==nearbyplanet$x,y==nearbyplanet$y,z==nearbyplanet$z),'info'][[1]] <- list(fullplanetinfo);
   ship$planetLocalDB[with(ship$planetLocalDB,x==nearbyplanet$x,y==nearbyplanet$y,z==nearbyplanet$z),'visited'] <- 2L;
+  ship$planetLocalDB[with(ship$planetLocalDB,x==nearbyplanet$x,y==nearbyplanet$y,z==nearbyplanet$z),'probed'] <- Sys.time();
   ship$probes <- ship$probes - 1;
   shipLog('${name} has sent probes to explore a new planet. ${probes} remain.',tags='probes');
   # TODO: come up with a more dramatic exposition when planet anomalies are done
@@ -422,7 +523,7 @@ moveShip <- function(ship, target,eventweight=4,dologs=T,doscans=T) {
   };
 
   # return updated object
-  return(ship);
+  invisible(ship);
 };
 
 
@@ -451,6 +552,48 @@ generateEventNode <- function(maxDepth, depth = 1,description='MISSING') {
   }
 }
 
+shipReport <- function(ship,...){
+  # nicely formatted ship info
+}
+
+planetReport <- function(planetrow,...){
+  # nicely formatted planet info, planetrow is an entire row from ship$planetLocalDB
+}
+
+navigateEvent2 <- function(ship,node,onexit=NULL,...){
+  if(is.null(ship$eventtags)) ship$eventtags <- list();
+  if(is.null(ship$eventcache)) ship$eventcache <- list();
+  lastnode <- NULL;
+  thisnode <- node;
+  # while the thisnode doesn't have the attribute finish=T...
+  while(!isTRUE(thisnode$finish)){
+    if(any(class(thisnode$description) %in% c('character','function'))){
+      # run the function that outputs the description
+      description <- if(is.character(thisnode$description)) thisnode$description else {
+        thisnode$description(ship,thisnode,...)};
+      } else {description <- 'An unknown event occurs'};
+    shipLog(description = description,preset = 'event');
+    
+    # run the decideChoices() function that returns a name=node list of choices
+    # by default it gets those from the child nodes, but it can dynamically add
+    # additional nodes, or randomly select only one node to offer
+    choices <- if(is.null(thisnode$decideChoices)) thisnode$children else {
+      thisnode$decideChoices(ship,node,...)};
+    choice_made <- menu(names(choices),c(thisnode$choicestitle,'What will you do?'));
+    # after obtaining user's response, send it to the decideOutcome(ship,thisnode,nextnode) function
+    # nextnode becomes thisnode and continue
+    browser();
+    lastnode <- thisnode; 
+    thisnode <- thisnode$decideOutcome(ship,thisnode,choices[[choice_made]],...);
+  };
+  # clean up anything needing cleanup
+  ship$eventcache <- ship$eventtags <- NULL;
+  if(!missing(onexit)) onexit(ship,...);
+  # if maportable is missing, prompt the user which one they want.
+  # if maportable == 'resume' do moveShip(ship)
+  # if maportable == 'map' prompt the user to click on the starmap,run rglStarChart(), then rglCoordCapture()
+  # if maportable == 'table' run promptNav()
+}
 
 # Helper function to navigate event hierarchy
 navigateEvent <- function(eventData) {
@@ -557,7 +700,7 @@ currentPlanet <- function(ship){
   
 }
 
-scanPlanets <- function(ship){
+scanPlanets <- function(ship,tolerance=1e-5,autonudge=T,...){
   # name of the sensor variables
   sensornames <- grep('_sensor$',names(ship),val=T);
   # calculate rr, the distance at which the currently best sensor's accuracy drops to 0.
@@ -568,9 +711,6 @@ scanPlanets <- function(ship){
   planets_scanned <- withinDist(ship$coords,rr);
   planets0 <- left_join(planets_scanned,ship$planetLocalDB,by=c('x','y','z')
                    ,suffix=c('_global',''));
-  shipLog(paste0('Total systems in scanner range: ',NROW(planets0)),tags=c('auto','scan'));
-  if((planets_discovered<-NROW(subset(planets0,is.na(visited))))>0){
-    shipLog(paste0('Discovered ',planets_discovered,' new systems.'),tags='discovery')};
   # Calculate distance and accuracy for each sensor at that distance. 
   planets1 <- p3Distance(planets0[,c('x','y','z')],ship$coords) %>% 
     cbind(as.data.frame(sensorlevels),distance=.) %>% 
@@ -587,6 +727,17 @@ scanPlanets <- function(ship){
            ) %>% 
     # rename the sensor columns so they don't collide with planets0
     rename_at(vars(ends_with("_sensor")), funs(paste0(., "_current")));
+  
+  if(min(planets1$distance) > 0 && min(planets1$distance)<tolerance){
+    nudgeShip(ship);
+    return(scanPlanets(foo,...));
+  };
+  
+  shipLog(paste0('Total systems in scanner range: ',NROW(planets0)),tags=c('auto','scan'));
+  if((planets_discovered<-NROW(subset(planets0,is.na(visited))))>0){
+    shipLog(paste0('Discovered ',planets_discovered,' new systems.'),tags='discovery')};
+  
+  
   # final stage of planet data-- combine everything, precalculate update decisions
   planets2 <- cbind(planets0,planets1);
   for(ii in seq_len(NROW(planets2))){
@@ -612,17 +763,17 @@ scanPlanets <- function(ship){
   class(planets2$info) <- 'AsIs';
   planets2$visited <- coalesce(planets2$visited,0L);
 
+
   # If the distance is 0 and the visited column is 0...   
-  currentPlanet <- with(planets2,which(visited==0 & distance == 0));
+  currentPlanet <- with(planets2,which(distance==0));
   if(length(currentPlanet)>0){
     if(length(currentPlanet)>1) stop('Cannot be in multiple systems at the same time');
     #  Set the visited column to 1
     ship$state <- 'planet';
-    planets2[currentPlanet,'visited'] <- 1L;
-    #  Populate the description of the current planetLocalDB info entry with first value of description from the corresponding planetGlobalDB info entry 
-    #planets2[currentPlanet,'info'][[1]][[1]]$description<- planets2[currentPlanet,'info_global'][[1]][[1]]$description[1];
-    #planets2[currentPlanet,'info'][[1]]$description <- planets2[currentPlanet,'info_global'][[1]]$description[1]
-    #     planets2[currentPlanet,'info'][[1]][[1]]$anomalies <- planets2[currentPlanet,'info_global'][[1]][[1]]$anomalies %>% filter(visibility==1);
+    planets2[currentPlanet,'first_visited'] <- coalesce(planets2[currentPlanet,'first_visited'],Sys.time());
+    planets2[currentPlanet,'last_visited']<-Sys.time();
+    if(planets2[currentPlanet,'visited']==0) planets2[currentPlanet,'visited'] <- 1L;  
+
     currentPlanetInfo <- planets2[currentPlanet,'info'][[1]];
     pdesc <- currentPlanetInfo$description <- planets2[currentPlanet,'info_global'][[1]]$description;
     currentPlanetInfo$anomalies <- planets2[currentPlanet,'info_global'][[1]]$anomalies %>% 
@@ -671,6 +822,5 @@ promptNav(foo);
 #foo <- moveShip(foo,.target);
 # if stops on planet:
 # then choose whether to send probes, colonize, or moveShip again.
-
 
 NULL
