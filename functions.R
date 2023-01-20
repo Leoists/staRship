@@ -458,6 +458,7 @@ newShip <- function(...) {
     ship[[ii]] <- args[[ii]]};
   ship <- as.environment(ship);
   class(ship) <- 'staRship';
+  ship$self <- ship;
   shipLog('${name} begins its voyage!',tags='start');
   scanPlanets(ship);
   return(ship);
@@ -565,6 +566,15 @@ generateEventNode <- function(maxDepth, depth = 1,description='MISSING') {
 
 shipReport <- function(ship,...){
   # nicely formatted ship info
+  #nearestplanet <- currentPlanet(ship);
+  with(ship,switch(state,planet='orbiting ${currentPlanet(self)$info[[1]]$description}'
+                  ,space=if(!exists('lastdestination')) 'drifting in space' else 'heading toward $[.3f]{lastdestination}'
+                  ,event='experiencing an event') %>% 
+         paste0('${name} is at $[.3f]{coords}, ', .) %>% str_interp() ) %>% 
+    gsub('c\\(\\"','("',.) %>% message;
+  mget(c('probes','landing_gear','equipment','dbase','colonists','resources_sensor','temperature_sensor','gravity_sensor','atmosphere_sensor','water_sensor','traveled'),ship) %>% 
+    cbind %>% data.frame() %>% setNames('status') %>% print;
+  cat('\n');
 }
 
 planetReport <- function(planetrow,...){
@@ -825,10 +835,11 @@ navigateEvent <- function(ship,node,...){
   # If nchoices is a function, call that function replace nchoices with the 
   # result of that call
   nchoices <- if(is.function(node$nchoices)){
-    node$nchoices(ship,node,...)}else node$nchoices;
+    node$nchoices(ship,node,...)} else node$nchoices;
   choices <- c(node$children
                ,if(is.function(node$dynchoices)){
-                 node$dynchoices(ship,node,...)} else c())
+                 node$dynchoices(ship,node,...)} else c());
+  if(is.null(nchoices)) nchoices <- length(choices);
   # probabilistically limit choices if necessary
   if(nchoices < length(choices)){
     probs <- sapply(choices,calcNodeProb,ship=ship);
@@ -850,7 +861,7 @@ shipEventLoop <- function(ship,node,...){
   cur_node <- node;
   while(!is.null(cur_node)){
     prev_node <- cur_node;
-    cur_node <- navigateEvent3(ship,cur_node,...);
+    cur_node <- navigateEvent(ship,cur_node,...);
   };
   # reset state
   if(ship$state == 'event') ship$state <- 'space';
@@ -866,7 +877,8 @@ shipLoop <- function(ship,doStarChart=T,...){
       shipEventLoop(ship,repair_drone,...)};
     if(doStarChart) ids <- rglStarChart(ship);
     generalchoices <- c('Consult star database'
-                        ,'Select new destination from 3D starmap');
+                        ,'Select new destination from 3D starmap'
+                        ,'Ship report');
     if(!is.null(ship$lastdestination)){
       generalchoices <- c('Continue to current destination',generalchoices)};
     if(ship$state == 'planet' && nudgeShip(ship)$visited<2){
@@ -883,6 +895,7 @@ shipLoop <- function(ship,doStarChart=T,...){
               newtarget <- rglCoordCapture(ids);
               moveShip(ship,newtarget);
               ids<-rglStarChart(ship);}
+           ,`Ship report`=shipReport(ship)
            ,`Send probes to nearby planet`=sendProbes(ship) # probes
            );
     #browser();
@@ -893,19 +906,21 @@ shipLoop <- function(ship,doStarChart=T,...){
 
 
 foo <- newShip();
+shipLoop(foo);
 # basic event-loop sketch ----
 # to get a 3d starmap
-ids <- rglStarChart(foo);
+#ids <- rglStarChart(foo);
 # ids can then be used to catch mouse clicks
-moveShip(foo,suppressWarnings(rglCoordCapture(ids)));ids<-rglStarChart(foo);
+#moveShip(foo,suppressWarnings(rglCoordCapture(ids)));ids<-rglStarChart(foo);
 # To keep moving after event interruption...
-moveShip(foo);ids<-rglStarChart(foo);
-promptNav(foo);
+#moveShip(foo);ids<-rglStarChart(foo);
+#promptNav(foo);
 
 
 # TODO 
 # DONE launch probes
-# INPROGRESS events
+# DONE events
+# * Create actual event-trees and top-level event-selector
 # * colonization
 # * shiny integration
 
