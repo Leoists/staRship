@@ -21,11 +21,19 @@ planetparams <- list(
 planetGlobalDB <- data.frame(x=numeric(0),y=numeric(0),z=numeric(0),info=I(list()));
 
 
-# code for event-tree
-
-repair_drone <- Node$new('repair_drone',description=function(ship,node,...) 'A probe from your homeworld finally caught up with you. It is offering to perform repairs',decideOutcome=function(ship,thisnode,nextnode,...){browser()})
-repair_drone$AddChild('Ignore the message from the probe',description='You ignore the message from the probe and maintain course',finish=T)
+#. code for event-tree ----
+repair_drone <- Node$new('repair_drone',description=function(ship,node,...) c('A probe from your homeworld finally caught up with ${ship$name}.', 'It is offering to perform repairs')
+                         ,effect= function(ship,node,...) list(tags=c(testA=1,testB=-1,testC=2.3)
+                                                               ,eventtags=c(evA=2.3,evB=1,evC=-1)
+                                                               ,shipstats=list(min_damage=c(probes=0,landing_gear=-5,equipment=-20),max_damage=c(landing_gear=20,default=5),probs=c(gravity_sensor=2),damageable=c('landing_gear','equipment','gravity_sensor','water_sensor'),max_systems=4)
+                         )
+                         ,nchoices = function(ship,node,...) if(isTRUE(ship$tags$test1choice>0)) length(node$children)-1 else valueModFromTags(unlist(c(ship$tags,ship$eventtags)),c(evB=1.5,evC=0,evD=0.1,evA=1.1,testC=2.1),mod=`+`,aggmod=sum)
+                         ,decideOutcome=function(ship,thisnode,nextnode,...){browser()})
+repair_drone$AddChild('Ignore the message from the probe'
+                      ,baseprob=function(ship,node,...) 1,probmods=function(ship,node,...) c(testA=1.1,testB=0,testC=0.5)
+                      ,choicetext=function(ship,node,...) {'${ship$name} ignores message'} ,description='You ignore the message from the probe and maintain course',finish=T)
 repair_drone$AddChild('Rendezvous with the probe',description=function(ship,node,...) {browser()},decideOutcome=function(ship,thisnode,netnode,...) {browser()},finish=T)
+repair_drone$AddChild('Flip a coin',description=function(ship,node,...) {browser()},decideOutcome=function(ship,thisnode,netnode,...) {browser()},finish=T)
 # more ambitious event-tree
 test_event <- Node$new('test_event'
   ,description=function(ship,node,...){
@@ -54,12 +62,12 @@ transmission coming from a system at ${formatCoords(ship$eventcache$nearestplane
 It ${messagetypedisplay}."
     str_interp(out) %>% str_wrap(width = 80);
   }
-  ,decideChoices(ship,node,...){
+  ,choices=function(ship,node,...){
     out <- thisnode$children;
     # generate a dynamic choice
     # randomly remove one of the choices
-  }
-  ,decideOutcome(ship,node,...){
+    }
+  ,outcome=function(ship,node,...){
     browser();
     # add permanent tags to ship
     # modify the nearest planet to have a high-tech civ
@@ -106,7 +114,7 @@ stringToNameVal <- function(xx,outersep=',',innersep='=',valtransform=as.numeric
 # unless the modfun is set to some other binary 
 # operator than `+` in which case it uses that
 # limits sets the cap on the number of tag instances
-updateTags <- function(taglist,mod=`+`,limits=c(0,Inf),newtags=c(),trimzeros=T,...){
+updateTags <- function(taglist,newtags=c(),mod=`+`,limits=c(0,Inf),trimzeros=T,...){
   if(is.null(names(newtags)) && length(newtags)==1 && 
      is.character(newtags) && grepl('=',newtags)){
     newtags <- stringToNameVal(newtags)};
@@ -323,10 +331,14 @@ parseVectorStrings <- function(xx,match=c()){
 }
 
 nudgeShip <- function(ship,tolerance=1e-5){
-  almosthere <- prepStarChart(ship) %>% filter(distance>0 & distance < tolerance);
-  if(NROW(almosthere)==0) return();
+  almosthere <- currentPlanet(ship,tolerance);
+  #almosthere <- prepStarChart(ship) %>% filter(distance>0 & distance < tolerance);
+  if(NROW(almosthere)==0 || almosthere$distance==0) return(almosthere);
   shipLog(str_interp("Minor orbital correction to $[.5f]{almosthere[1,c('x','y','z')]}"));
-  moveShip(ship,almosthere[1,c('x','y','z')],dologs=F,doscans=F)};
+  moveShip(ship,almosthere[1,c('x','y','z')],eventweight = 100,dologs=F,doscans=F);
+  ship$state <- 'planet';
+  return(almosthere);
+  };
 
 damageShip <- function(ship,max_systems=3
                        # all of these arguments can be named vectors with one
@@ -453,8 +465,8 @@ newShip <- function(...) {
 
 
 sendProbes <- function(ship){
-  nudgeShip(ship);
-  nearbyplanet <- prepStarChart(ship,NA) %>% filter(distance==0);
+  nearbyplanet <- nudgeShip(ship);
+  #nearbyplanet <- prepStarChart(ship,NA) %>% filter(distance==0);
   if(NROW(nearbyplanet)==0){
     warning('Not near a planet, cannot send probes');
     return()};
@@ -483,7 +495,6 @@ sendProbes <- function(ship){
 # The higher the eventweight, the fewer events. Think of it as the ship speed--
 # the faster it goes, the less chance of running into events
 moveShip <- function(ship, target,eventweight=4,dologs=T,doscans=T) {
-  # TODO: if called from nudgeShip don't scan and maybe abbreviated log
   if(missing(target)){
     if(is.null(ship$lastdestination)){
       warning('No previous destination set. ',ship$name,' remains where it is.');
@@ -560,68 +571,6 @@ planetReport <- function(planetrow,...){
   # nicely formatted planet info, planetrow is an entire row from ship$planetLocalDB
 }
 
-navigateEvent2 <- function(ship,node,onexit=NULL,...){
-  if(is.null(ship$eventtags)) ship$eventtags <- list();
-  if(is.null(ship$eventcache)) ship$eventcache <- list();
-  lastnode <- NULL;
-  thisnode <- node;
-  # while the thisnode doesn't have the attribute finish=T...
-  while(!isTRUE(thisnode$finish)){
-    if(any(class(thisnode$description) %in% c('character','function'))){
-      # run the function that outputs the description
-      description <- if(is.character(thisnode$description)) thisnode$description else {
-        thisnode$description(ship,thisnode,...)};
-      } else {description <- 'An unknown event occurs'};
-    shipLog(description = description,preset = 'event');
-    
-    # run the decideChoices() function that returns a name=node list of choices
-    # by default it gets those from the child nodes, but it can dynamically add
-    # additional nodes, or randomly select only one node to offer
-    choices <- if(is.null(thisnode$decideChoices)) thisnode$children else {
-      thisnode$decideChoices(ship,node,...)};
-    choice_made <- menu(names(choices),c(thisnode$choicestitle,'What will you do?'));
-    # after obtaining user's response, send it to the decideOutcome(ship,thisnode,nextnode) function
-    # nextnode becomes thisnode and continue
-    browser();
-    lastnode <- thisnode; 
-    thisnode <- thisnode$decideOutcome(ship,thisnode,choices[[choice_made]],...);
-  };
-  # clean up anything needing cleanup
-  ship$eventcache <- ship$eventtags <- NULL;
-  if(!missing(onexit)) onexit(ship,...);
-  # if maportable is missing, prompt the user which one they want.
-  # if maportable == 'resume' do moveShip(ship)
-  # if maportable == 'map' prompt the user to click on the starmap,run rglStarChart(), then rglCoordCapture()
-  # if maportable == 'table' run promptNav()
-}
-
-# Helper function to navigate event hierarchy
-navigateEvent <- function(eventData) {
-  if (! 'outcomes' %in% names(eventData)) {
-    # If eventData is a list, print description and numbered list of choices
-    if ("description" %in% names(eventData)) {
-      print(eventData$description)
-    }
-    choices <- names(eventData)[!names(eventData) %in% c("description")];
-    choiceslist <- paste0(seq_along(choices),': ',choices,collapse='\n');
-    choiceNum <- -1;
-    while(! choiceNum %in% seq_along(choices)){
-      cat(choiceslist);
-      # Prompt user to choose a question
-      choiceNum <- as.numeric(readline("Enter the number of your choice: "))
-    };
-    
-    # Navigate to chosen choice
-    navigateEvent(eventData[[choices[choiceNum]]])
-  } else {
-    # If eventData is not a list, it is a terminal node containing a named numeric vector of ship variables
-    if ("description" %in% names(eventData)) {
-      print(eventData$description)
-    }
-    eventData$outcomes;
-  }
-}
-
 generateAnomaly <- function(planetinfo,anomdata=anomalies) {
   planetstats<-planetinfo[c('water','atmosphere','gravity','temperature','resources')] %>% unlist %>% gsub(' ','_',.);
   planettags <- planetinfo$anomalies$tags; if(is.null(planettags)) planettags <- '';
@@ -696,8 +645,8 @@ genPlanets <- function(coords, dist = 9, maxp = 50) {
   return(new_planets);
 }
 
-currentPlanet <- function(ship){
-  
+currentPlanet <- function(ship,tolerance=1e-5,cols=NA){
+  prepStarChart(ship,cols) %>% filter(distance <= tolerance);
 }
 
 scanPlanets <- function(ship,tolerance=1e-5,autonudge=T,...){
@@ -792,6 +741,156 @@ planetReport <- function(ship){
   
 }
 
+# Event loop ----
+#' # Adventure Node
+#' 
+#' Node with the following contents
+#' 
+#' * id: numeric(1) 
+#' * choicetext: character(1) vector with optional ${...} tags to evaluate in 
+#'               calling ${ship$...} and ${node$...} will be available, others 
+#'               might be too, discover which ones by trial and error 
+#'               (and browser)
+#' * description: character vector with optional ${...} tags to evaluate as 
+#'                above. Currently, multiple lines are collapsed with '\n'
+#' * baseprob: numeric(1) >= 0
+#' * probmods: named numeric vector >= 0
+#' * effect: list containing any combo of the following values
+#'   * shipstats: named list containing any combination of arguments used by damageShip (except the ship argument)
+#'   * tags (named integer vector)
+#'   * eventtags (named integer vector)
+#'   * eventcache (named list)
+#' * nchoices: integer(1) between 0 and Inf
+#' * dynchoices: function returning a list of nodes
+#' 
+#' Any of the above static values except choicetext can be replaced by a 
+#' function that returns that type of object and takes as its first two 
+#' arguments a ship object and a node object.
+#' 
+#' The node is processed in the following steps:
+#' 
+#' * Process and present the description
+#' * Process the effect
+#' * 
+
+
+# note the reversal of node and ship!
+prepNodeChoiceText <- function(node,ship,...){
+  # If node$choicetext is a function, call it and retain the result otherwise 
+  # retain node$choicetext
+  choicetext <- if(is.function(node$choicetext)){
+    node$choicetext(ship,node,...) } else node$choicetext; 
+  if(is.null(choicetext)) choicetext <- node$name;
+  str_interp(choicetext);
+}
+
+# note the reversal of node and ship!
+calcNodeProb <- function(node,ship,...){
+  # If node$baseprob is a function, call that function and retain the result 
+  # otherwise just retain node$baseprob.
+  baseprob <- if(is.function(node$baseprob)){
+    node$baseprob(ship,node,...)} else node$baseprob; 
+  if(is.null(baseprob)) baseprob <- 1;
+  # If node$probmods is a function, call that function and retain the result 
+  # otherwise just retain node$probmods
+  probmods <- if(is.function(node$probmods)){
+    node$probmods(ship,node,...)} else node$probmods; 
+  # Obtain a tags list from ship$tags and ship$eventtags
+  activetags <- unlist(c(ship$tags,ship$eventtags));
+  # obtain the final probability of selection
+  finalprob <- baseprob * valueModFromTags(probmods,activetags);
+}
+
+navigateEvent <- function(ship,node,...){
+  # If description is a function, call that function and replace description 
+  # with the result of that call.
+  description <- if(is.function(node$description)){
+    node$description(ship,node,...) } else node$description; 
+  # interpolate dynamic values
+  description <- paste0(description,collapse='\n') %>% str_interp();
+  # this part may vary depending on UI
+  message(description);
+  #' If effect is a function, call that function and replace effect with the 
+  #' result of that call.
+  effect <- if(is.function(node$effect)){
+    node$effect(ship,node,...) } else node$effect;
+  # For each item in effect, modify the corresponding item in ship accordingly
+  # tags affecting the ship only for the duration of this event
+  ship$eventtags <- updateTags(ship$eventtags,newtags=effect$eventtags);
+  # tags permanently affecting the ship (until negated by some future tag)
+  ship$tags <- updateTags(ship$tags,newtags=effect$tags);
+  # damage (or repair) ship
+  do.call(damageShip,c(ship,effect$shipstats));
+  # TODO: update ship$eventcache
+  # If nchoices is a function, call that function replace nchoices with the 
+  # result of that call
+  nchoices <- if(is.function(node$nchoices)){
+    node$nchoices(ship,node,...)}else node$nchoices;
+  choices <- c(node$children
+               ,if(is.function(node$dynchoices)){
+                 node$dynchoices(ship,node,...)} else c())
+  # probabilistically limit choices if necessary
+  if(nchoices < length(choices)){
+    probs <- sapply(choices,calcNodeProb,ship=ship);
+    choices <- sample(choices,nchoices,prob=probs);
+  }
+  # detect whether this is a terminal node
+  if(length(choices)==0) {message('Done'); return()};
+  # prepare choice names
+  choicenames <- sapply(choices,prepNodeChoiceText,ship=ship);
+  # this part varies depending on UI
+  chosen <- 0;
+  while(!chosen %in% seq_along(choicenames)){
+    chosen <- menu(choicenames);
+  }
+  return(choices[[chosen]]);
+}
+
+shipEventLoop <- function(ship,node,...){
+  cur_node <- node;
+  while(!is.null(cur_node)){
+    prev_node <- cur_node;
+    cur_node <- navigateEvent3(ship,cur_node,...);
+  };
+  # reset state
+  if(ship$state == 'event') ship$state <- 'space';
+  # clear event-specific objects
+  ship$eventtags <- ship$eventcache <- NULL;
+  message('Encounter concluded');
+}
+
+shipLoop <- function(ship,doStarChart=T,...){
+  donext <- 'init';
+  while(!is.null(donext) && donext!=''){
+    if(ship$state=='event'){
+      shipEventLoop(ship,repair_drone,...)};
+    if(doStarChart) ids <- rglStarChart(ship);
+    generalchoices <- c('Consult star database'
+                        ,'Select new destination from 3D starmap');
+    if(!is.null(ship$lastdestination)){
+      generalchoices <- c('Continue to current destination',generalchoices)};
+    if(ship$state == 'planet' && nudgeShip(ship)$visited<2){
+      generalchoices <- c(generalchoices,'Send probes to nearby planet')};
+    donext <- select.list(generalchoices,title='What should we do next?');
+    #browser();
+    switch(donext
+           ,`Continue to current destination`=moveShip(ship) # continue to current
+           ,`Consult star database`=promptNav(ship) # star db
+           ,`Select new destination from 3D starmap`={
+              ids <- rglStarChart(ship);
+              message('Click and drag on star-chart, trying to select only one point');
+              #browser();
+              newtarget <- rglCoordCapture(ids);
+              moveShip(ship,newtarget);
+              ids<-rglStarChart(ship);}
+           ,`Send probes to nearby planet`=sendProbes(ship) # probes
+           );
+    #browser();
+  }
+}
+
+
+
 
 foo <- newShip();
 # basic event-loop sketch ----
@@ -805,22 +904,12 @@ promptNav(foo);
 
 
 # TODO 
-# * launch probes
-# * events
+# DONE launch probes
+# INPROGRESS events
 # * colonization
 # * shiny integration
 
-# if stops on event:
-# do event and then...
-# What does it mean to 'do' an event?
-# 1. Present node text.
-# 2. If effects present, run code to apply them
-# 2a. If manual choices, present them and collect user input.
-# 2b. If random choices, run code to select.
-# ... repeat at next node
-# ...when completing leaf node: just exit and maybe set state to 'space'
-#foo <- moveShip(foo,.target);
-# if stops on planet:
-# then choose whether to send probes, colonize, or moveShip again.
+# Design notes ----
+
 
 NULL
