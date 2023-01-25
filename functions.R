@@ -77,7 +77,12 @@ It ${messagetypedisplay}."
 
 
 # small helper functions ----
-
+# To get values nested several levels deep, e.g. from a list-valued column
+excavateList <- function(xx){
+  thisfun <- sys.function();
+  if(!is.list(xx)||length(xx)>1) return(xx);
+  thisfun(xx[[1]]);
+}
 # How accurate is a given sensor given its level and distance to target?
 sensorAccuracy <- function(sensorlevel,distance
                            ,sensorweight=20,distanceweight=10){
@@ -901,6 +906,41 @@ shipLoop <- function(ship,doStarChart=T,...){
     #browser();
   }
 }
+
+# # commented out until we again have a tsv with the appropriate columns to 
+# # import into the events data.frame
+# 
+events <- import('events_test.xlsx') %>%
+  mutate(across(!any_of(c('pathString','choicetext','parent','package','notes','shipstats','tags','eventtags','eventcache'))
+                ,~sapply(.x,function(xx){
+                  if(grepl('^function',as.character(xx))) eval(str2lang(xx)) else xx
+                },simplify=F))
+         ,across(all_of(c('shipstats','tags','eventtags','eventcache'))
+                 ,~sapply(sprintf('list(%s)',coalesce(.x,'')),function(xx) eval(str2lang(xx)))));
+events$effect <- rowwise(events) %>%
+  mutate(effect=list(list(shipstats=shipstats,tags=tags
+                          ,eventtags=eventtags,eventcache=eventcache))) %>%
+  select(effect);
+
+
+
+
+eventnodes <- select(events,all_of(c('pathString','choicetext','baseprob'
+                                     ,'probmods','description'
+                                     ,'effect_function','effect','nchoices'
+                                     ,'dynchoices','package'))) %>% as.Node();
+eventnodes$Do(function(node){
+  iilist <- list();
+  for(ii in intersect(node$attributes,names(events))) {
+    iilist[[ii]] <- excavateList(node[[ii]])};
+  if(is.function(iilist$effect_function)){
+    iilist$effect <- iilist$effect_function};
+  iilist$effect_function <- NULL;
+  for(ii in names(iilist)) node[[ii]] <- iilist[[ii]];
+  node$RemoveAttribute('effect_function',stopIfNotAvailable=F)});
+# top-level nodes are chosen randomly one per event
+eventnodes$nchoices <- 1;
+
 
 
 
