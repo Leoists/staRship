@@ -907,9 +907,9 @@ shipLoop <- function(ship,doStarChart=T,...){
   }
 }
 
-# # commented out until we again have a tsv with the appropriate columns to 
-# # import into the events data.frame
-# 
+# import into the events data.frame
+# TODO: ...but what will happen when I populate shipstats and friends with
+#       named lists and vectors?
 events <- import('events_test.xlsx') %>%
   mutate(across(!any_of(c('pathString','choicetext','parent','package','notes','shipstats','tags','eventtags','eventcache'))
                 ,~sapply(.x,function(xx){
