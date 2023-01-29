@@ -834,8 +834,8 @@ navigateEvent <- function(ship,node,...){
   ship$eventtags <- updateTags(ship$eventtags,newtags=effect$eventtags);
   # tags permanently affecting the ship (until negated by some future tag)
   ship$tags <- updateTags(ship$tags,newtags=effect$tags);
-  # damage (or repair) ship
-  do.call(damageShip,c(ship,effect$shipstats));
+  # damage (or repair) ship if that effect is needed
+  if(length(effect$shipstats)>0) do.call(damageShip,c(ship,effect$shipstats));
   # TODO: update ship$eventcache
   # If nchoices is a function, call that function replace nchoices with the 
   # result of that call
@@ -852,6 +852,8 @@ navigateEvent <- function(ship,node,...){
   }
   # detect whether this is a terminal node
   if(length(choices)==0) {message('Done'); return()};
+  # detect whether this is a node that autoadvances if there is only one choice
+  if(length(choices)==1 && isTRUE(node$autoadvance)) return(choices[[1]]);
   # prepare choice names
   choicenames <- sapply(choices,prepNodeChoiceText,ship=ship);
   # this part varies depending on UI
@@ -879,7 +881,7 @@ shipLoop <- function(ship,doStarChart=T,...){
   donext <- 'init';
   while(!is.null(donext) && donext!=''){
     if(ship$state=='event'){
-      shipEventLoop(ship,repair_drone,...)};
+      shipEventLoop(ship,eventnodes,...)};
     if(doStarChart) ids <- rglStarChart(ship);
     generalchoices <- c('Consult star database'
                         ,'Select new destination from 3D starmap'
@@ -910,7 +912,7 @@ shipLoop <- function(ship,doStarChart=T,...){
 # import into the events data.frame
 # TODO: ...but what will happen when I populate shipstats and friends with
 #       named lists and vectors?
-events <- import('events_test.xlsx') %>%
+events <- import('events.xlsx') %>%
   mutate(across(!any_of(c('pathString','choicetext','parent','package','notes','shipstats','tags','eventtags','eventcache'))
                 ,~sapply(.x,function(xx){
                   if(grepl('^function',as.character(xx))) eval(str2lang(xx)) else xx
@@ -933,13 +935,17 @@ eventnodes$Do(function(node){
   iilist <- list();
   for(ii in intersect(node$attributes,names(events))) {
     iilist[[ii]] <- excavateList(node[[ii]])};
+  #if(node$name=='scanner') browser();
   if(is.function(iilist$effect_function)){
-    iilist$effect <- iilist$effect_function};
+    iilist$effect <- iilist$effect_function} else{
+      iilist$effect <- iilist$effect;
+    }
   iilist$effect_function <- NULL;
   for(ii in names(iilist)) node[[ii]] <- iilist[[ii]];
   node$RemoveAttribute('effect_function',stopIfNotAvailable=F)});
 # top-level nodes are chosen randomly one per event
-eventnodes$nchoices <- 1;
+eventnodes$nchoices <- 1; 
+eventnodes$autoadvance <- TRUE;
 
 
 
