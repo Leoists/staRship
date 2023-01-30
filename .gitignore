@@ -27,3 +27,7 @@ vignettes/*.pdf
 # R Environment Variables
 .Renviron
 *.bak
+# lock files
+.~lock.*
+# local files
+local
