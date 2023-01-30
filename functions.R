@@ -3,6 +3,7 @@ library(stringr);
 library(rgl);
 library(rio);
 library(data.tree);
+library(geometry);
 
 # global params ----
 statnames <- c('atmosphere','gravity','temperature','water','resources');
@@ -18,8 +19,9 @@ planetparams <- list(
 );
 
 # initialize the global planet database
-planetGlobalDB <- data.frame(x=numeric(0),y=numeric(0),z=numeric(0),info=I(list()));
+planetGlobalDB <- data.frame(x=numeric(0),y=numeric(0),z=numeric(0),info=I(list()),sector=character(0));
 
+sector_name_grid <- import('constellation_names.tsv',header=F);
 
 #. code for event-tree ----
 repair_drone <- Node$new('repair_drone',description=function(ship,node,...) c('A probe from your homeworld finally caught up with ${ship$name}.', 'It is offering to perform repairs')
@@ -77,6 +79,45 @@ It ${messagetypedisplay}."
 
 
 # small helper functions ----
+
+# Give sphCellNames a matrix or data.frame of string values as its 
+# sectors argument. Based on a set of
+# Cartesian 3D coordinates, it will tell you what sector those coordinates are 
+# in. If include_subsectors (default) it will also append a letter designation 
+# for a subsector based on radial distance from 0,0,0. Non-zero origin not yet
+# implemented
+sphCellNames <- function(coordinates,sectors = sector_name_grid
+                         ,include_subsectors = TRUE
+                         ,warnings=FALSE, origin = c(0, 0, 0)) {
+  # insure coordinates are a 3-column matrix
+  if(is.data.frame(coordinates)){
+    coordinates <- if(all(c('x','y','z') %in% names(coordinates))){
+      coordinates[,c('x','y','z')]} else {
+        coordinates[,1:3]
+      };
+    coordinates <- as.matrix(coordinates)};
+  if(!is.matrix(coordinates) && length(coordinates)==3){
+    coordinates <- unlist(coordinates) %>% matrix(nrow=1)}
+  sph_coord <- geometry::cart2sph(coordinates);
+  phi_cuts <- coalesce(as.numeric(colnames(sectors)),Inf);
+  theta_cuts <- coalesce(as.numeric(rownames(sectors)),Inf);
+  if(!all(between(phi_cuts,-pi,pi))){
+    if(warnings) warning('No reliable column names in xy_cutpoints, auto-assigning');
+    phi_cuts <- seq(-pi,pi,len=ncol(sectors)+1)[-1]};
+  if(!all(between(theta_cuts,-1,1))){
+    if(warnings) warning('No reliable row names in xy_cutpoints, auto-assigning');
+    theta_cuts <- seq(-1,1,len=nrow(sectors)+1)[-1]};
+  sector_names <- mapply(function(pp,tt){
+    sectors[which.min(abs(tt-theta_cuts)),which.min(abs(pp-phi_cuts))]
+  },sph_coord[,1],sph_coord[,2]);
+  if(include_subsectors){
+    sector_names <- paste(sector_names
+                          ,LETTERS[sapply(sph_coord[,3],function(xx){
+                            sum(xx > c(5,10^c(1:25)))})])};
+  sector_names;
+}
+
+
 # To get values nested several levels deep, e.g. from a list-valued column
 excavateList <- function(xx){
   thisfun <- sys.function();
@@ -345,6 +386,18 @@ nudgeShip <- function(ship,tolerance=1e-5){
   return(almosthere);
   };
 
+# Convenient way to access groups of ship stats
+getShipNumericStats <- function(ship,stats=c('sensors','dbs','lgeq','colonists','probes'),onlygt0=F,hideNA=F){
+  if('sensors' %in% stats) stats <- c(setdiff(stats,'sensors'),grep('_sensor$',names(ship),val=T));
+  if('dbs' %in% stats) stats <- c(setdiff(stats,'dbs'),c('dbase','planetLocalDB'));
+  if('lgeq' %in% stats) stats <- c(setdiff(stats,'lgeq'),c('landing_gear','equipment'))
+  stats <- unique(stats) %>% sapply(function(ii) if(is.data.frame(ship[[ii]])){
+    nrow(ship[[ii]])} else as.numeric(unname(ship[[ii]])));
+  if(onlygt0) stats <- stats[stats>0];
+  if(hideNA) stats <- na.omit(stats) %>% c;
+  stats;
+}
+
 damageShip <- function(ship,max_systems=3
                        # all of these arguments can be named vectors with one
                        # item named 'default'. In those cases, damageable items
@@ -357,12 +410,15 @@ damageShip <- function(ship,max_systems=3
                        # min_damage to negative and max_damage to positive if
                        # it might go either way.
                        ,min_damage=0,max_damage=10,probs=1
-                       ,damageable=c('planetLocalDB','probes','landing_gear'
-                                    ,'equipment','dbase','colonists'
-                                    ,'resources_sensor','temperature_sensor'
-                                    ,'gravity_sensor','atmosphere_sensor'
-                                    ,'water_sensor','colonists')
+                       ,damageable=names(getShipNumericStats(ship))
                        ){
+  if(length(damageable)==0){
+    shipLog(str_interp('Nothing left to damage!'),tags='damage');
+    # TODO: have damage spill over into hull instead
+    return(c(nothing=0));
+  }
+  if(length(intersect(damageable,c('sensors','dbs','lgeq')))>0){
+    damageable <- names(getShipNumericStats(ship,damageable,hideNA = TRUE))};
   # number of different systems damaged
   n_systems <- sample(1:min(max_systems,length(damageable)),1);
   n_actual_systems <- 
@@ -410,6 +466,7 @@ damageShip <- function(ship,max_systems=3
   # if planetLocalDB is damaged, calculate damage as a fraction of its max_damage
   # and randomly remove that fraction of entries from planetLocalDB
   if('colonists' %in% names(damaged)) damaged['colonists'] <- round(damaged['colonists']);
+  .planetLocalDBdmg <- NULL;
   if('planetLocalDB' %in% names(damaged)){
     .planetLocalDBdmg <- pmin(damaged['planetLocalDB']/instance_max_damage['planetLocalDB'],1);
     if(.planetLocalDBdmg>0){
@@ -432,6 +489,13 @@ damageShip <- function(ship,max_systems=3
       }
     }
   };
+  if(!is.null(.planetLocalDBdmg)) damaged['planetLocalDB'] <- .planetLocalDBdmg;
+  return(damaged);
+}
+
+updateShip <- function(ship,tagsdb){
+  # apply any tags that are dependent solely on the ship data 
+  # e.g. traveled, 
 }
 
 # big functions ----
@@ -495,6 +559,8 @@ sendProbes <- function(ship){
   ship$probes <- ship$probes - 1;
   shipLog('${name} has sent probes to explore a new planet. ${probes} remain.',tags='probes');
   # TODO: come up with a more dramatic exposition when planet anomalies are done
+  # TODO: give user opportunity to rename the planet by changing its name param
+  #       ...including in planetGlobalDB!
   return(fullplanetinfo);
 }
 
@@ -571,14 +637,16 @@ generateEventNode <- function(maxDepth, depth = 1,description='MISSING') {
 
 shipReport <- function(ship,...){
   # nicely formatted ship info
-  #nearestplanet <- currentPlanet(ship);
+  # always scanPlanets first, to catch the edge cases caused by the ship's 
+  # planetLocalDB taking damage
+  scanPlanets(ship);
   with(ship,switch(state,planet='orbiting ${currentPlanet(self)$info[[1]]$description}'
                   ,space=if(!exists('lastdestination')) 'drifting in space' else 'heading toward $[.3f]{lastdestination}'
                   ,event='experiencing an event') %>% 
-         paste0('${name} is at $[.3f]{coords}, ', .) %>% str_interp() ) %>% 
+         paste0('${name} is in the ${sphCellNames(coords)} sector at $[.3f]{coords}, ', .) %>% str_interp() ) %>% 
     gsub('c\\(\\"','("',.) %>% message;
-  mget(c('probes','landing_gear','equipment','dbase','colonists','resources_sensor','temperature_sensor','gravity_sensor','atmosphere_sensor','water_sensor','traveled'),ship) %>% 
-    cbind %>% data.frame() %>% setNames('status') %>% print;
+  cbind(getShipNumericStats(ship,c('colonists','probes','sensors','dbs','lgeq','traveled'))) %>% 
+    as.data.frame %>% setNames('status') %>% print;
   cat('\n');
 }
 
@@ -656,7 +724,12 @@ genPlanets <- function(coords, dist = 9, maxp = 50) {
   # keep only planets that are not too close, if any
   new_planets <- new_planets[new_planets_sufficientlyfar,];
   if(NROW(new_planets)==0) return();
-  new_planets$info <- I(replicate(nrow(new_planets),generatePlanet(),simplify=F));
+  sector <- apply(new_planets,1,sphCellNames);
+  planet_names <- with(new_planets,abs(digest::digest2int(paste0(x,y,z)))) %>% 
+    paste(sector,.);
+  new_planets$info <- I(sapply(planet_names,function(xx) generatePlanet(name=xx),simplify=F));
+  #new_planets$info <- I(replicate(nrow(new_planets),generatePlanet(name=accession_no),simplify=F));
+  new_planets$sector <- sector;
   return(new_planets);
 }
 
@@ -752,8 +825,9 @@ scanPlanets <- function(ship,tolerance=1e-5,autonudge=T,...){
 }
 
 planetReport <- function(ship){
-  starchart <- prepStarChart(ship,NA) %>% subset(grepl('\\*'));
-  
+  nudgeShip(ship);
+  starchart <- prepStarChart(ship,NA) %>% subset(distance==0);
+  print(starchart);
 }
 
 # Event loop ----
@@ -821,22 +895,27 @@ navigateEvent <- function(ship,node,...){
   # with the result of that call.
   description <- if(is.function(node$description)){
     node$description(ship,node,...) } else node$description; 
-  # interpolate dynamic values
-  description <- paste0(description,collapse='\n') %>% str_interp();
-  # this part may vary depending on UI
-  message(description);
-  #' If effect is a function, call that function and replace effect with the 
-  #' result of that call.
-  effect <- if(is.function(node$effect)){
-    node$effect(ship,node,...) } else node$effect;
+  # Note that the description is returned after processing all the effects 
+  # in case some of them create interpolatable obects (e.g. 'damaged').
+  
+  # If effect is a function, call that function and replace effect with the 
+  # result of that call.
+  .effect_debug<-try(effect <- if(is.function(node$effect)){
+    node$effect(ship,node,...) } else node$effect);
+  if(is(.effect_debug,'try-error')) browser();
   # For each item in effect, modify the corresponding item in ship accordingly
   # tags affecting the ship only for the duration of this event
-  ship$eventtags <- updateTags(ship$eventtags,newtags=effect$eventtags);
+  .eventtags_debug<- try(ship$eventtags <- updateTags(ship$eventtags,newtags=effect$eventtags));
+  if(is(.eventtags_debug,'try-error')){
+    warning('Launching debugger for updateTags in navigateEvent');
+    browser();
+  }
   # tags permanently affecting the ship (until negated by some future tag)
   ship$tags <- updateTags(ship$tags,newtags=effect$tags);
   # damage (or repair) ship if that effect is needed
-  if(length(effect$shipstats)>0) do.call(damageShip,c(ship,effect$shipstats));
-  # TODO: update ship$eventcache
+  if(length(effect$shipstats)>0) damaged <- do.call(damageShip,c(ship,effect$shipstats));
+  # update ship$eventcache
+  for(ii in names(effect$eventcache)) ship$eventcache[[ii]] <- effect$eventcache[[ii]];
   # If nchoices is a function, call that function replace nchoices with the 
   # result of that call
   nchoices <- if(is.function(node$nchoices)){
@@ -850,6 +929,12 @@ navigateEvent <- function(ship,node,...){
     probs <- sapply(choices,calcNodeProb,ship=ship);
     choices <- sample(choices,nchoices,prob=probs);
   }
+  # interpolate dynamic values
+  description <- paste0(description,collapse='\n') %>% str_interp();
+  #if(grepl('character.0.',description)) browser();
+  # this part may vary depending on UI
+  message(description);
+  
   # detect whether this is a terminal node
   if(length(choices)==0) {message('Done'); return()};
   # detect whether this is a node that autoadvances if there is only one choice
@@ -915,10 +1000,14 @@ shipLoop <- function(ship,doStarChart=T,...){
 events <- import('events.xlsx') %>%
   mutate(across(!any_of(c('pathString','choicetext','parent','package','notes','shipstats','tags','eventtags','eventcache'))
                 ,~sapply(.x,function(xx){
-                  if(grepl('^function',as.character(xx))) eval(str2lang(xx)) else xx
+                  if(grepl('^function',as.character(xx))) {eval(str2lang(xx))} else xx
                 },simplify=F))
          ,across(all_of(c('shipstats','tags','eventtags','eventcache'))
-                 ,~sapply(sprintf('list(%s)',coalesce(.x,'')),function(xx) eval(str2lang(xx)))));
+                 ,~sapply(sprintf('list(%s)',coalesce(.x,'')),function(xx) eval(str2lang(xx))))
+         # unlike the other columns, baseprob has a numeri data type and needs to be converted
+         # back to numeric because the presence of functions in this column coerces it to a string
+         ,baseprob=sapply(baseprob,function(xx) if(is.character(xx) && !is.na(as.numeric(xx)[1])) as.numeric(xx) else xx)
+         );
 events$effect <- rowwise(events) %>%
   mutate(effect=list(list(shipstats=shipstats,tags=tags
                           ,eventtags=eventtags,eventcache=eventcache))) %>%
@@ -930,7 +1019,7 @@ events$effect <- rowwise(events) %>%
 eventnodes <- select(events,all_of(c('pathString','choicetext','baseprob'
                                      ,'probmods','description'
                                      ,'effect_function','effect','nchoices'
-                                     ,'dynchoices','package'))) %>% as.Node();
+                                     ,'dynchoices','autoadvance','package'))) %>% as.Node();
 eventnodes$Do(function(node){
   iilist <- list();
   for(ii in intersect(node$attributes,names(events))) {
@@ -946,6 +1035,7 @@ eventnodes$Do(function(node){
 # top-level nodes are chosen randomly one per event
 eventnodes$nchoices <- 1; 
 eventnodes$autoadvance <- TRUE;
+eventnodes$description <- '';
 
 
 
