@@ -8,7 +8,7 @@ library(geometry);
 # global params ----
 statnames <- c('atmosphere','gravity','temperature','water','resources');
 
-anomalies <- import('anomalies.tsv');
+anomalies <- import('data/anomalies.tsv');
 
 planetparams <- list(
   atmosphere = c("Breathable", "Marginal", "Non-breathable", "Toxic", "Corrosive", "No atmosphere")
@@ -21,64 +21,21 @@ planetparams <- list(
 # initialize the global planet database
 planetGlobalDB <- data.frame(x=numeric(0),y=numeric(0),z=numeric(0),info=I(list()),sector=character(0));
 
-sector_name_grid <- import('constellation_names.tsv',header=F);
-
-#. code for event-tree ----
-repair_drone <- Node$new('repair_drone',description=function(ship,node,...) c('A probe from your homeworld finally caught up with ${ship$name}.', 'It is offering to perform repairs')
-                         ,effect= function(ship,node,...) list(tags=c(testA=1,testB=-1,testC=2.3)
-                                                               ,eventtags=c(evA=2.3,evB=1,evC=-1)
-                                                               ,shipstats=list(min_damage=c(probes=0,landing_gear=-5,equipment=-20),max_damage=c(landing_gear=20,default=5),probs=c(gravity_sensor=2),damageable=c('landing_gear','equipment','gravity_sensor','water_sensor'),max_systems=4)
-                         )
-                         ,nchoices = function(ship,node,...) if(isTRUE(ship$tags$test1choice>0)) length(node$children)-1 else valueModFromTags(unlist(c(ship$tags,ship$eventtags)),c(evB=1.5,evC=0,evD=0.1,evA=1.1,testC=2.1),mod=`+`,aggmod=sum)
-                         ,decideOutcome=function(ship,thisnode,nextnode,...){browser()})
-repair_drone$AddChild('Ignore the message from the probe'
-                      ,baseprob=function(ship,node,...) 1,probmods=function(ship,node,...) c(testA=1.1,testB=0,testC=0.5)
-                      ,choicetext=function(ship,node,...) {'${ship$name} ignores message'} ,description='You ignore the message from the probe and maintain course',finish=T)
-repair_drone$AddChild('Rendezvous with the probe',description=function(ship,node,...) {browser()},decideOutcome=function(ship,thisnode,netnode,...) {browser()},finish=T)
-repair_drone$AddChild('Flip a coin',description=function(ship,node,...) {browser()},decideOutcome=function(ship,thisnode,netnode,...) {browser()},finish=T)
-# more ambitious event-tree
-test_event <- Node$new('test_event'
-  ,description=function(ship,node,...){
-    # find nearest planet
-    nearestplanet <- prepStarChart(ship,NA) %>% subset(distance==min(distance));
-    # we're going to refer to this planet later on in the event, so record it in
-    # the ship's eventcache 
-    ship$eventcache$nearestplanetcoords <- nearestplanet[,c('x','y','z')];
-    # randomly choose the type of message to receive
-    messagetype <- sample(c('simple_message','complex_message','noisy_message'),1);
-    messageintent <- sample(c('hostile','friendly'),1);
-    ship$eventtags[[paste0(messagetype,'_',messageintent)]] <- 1;
-    messagetypedisplay <- switch (
-      messagetype
-      ,simple_message = '  starts with a sequence of prime numbers, then some universal mathematical constants, eventually working its way up to the basics of decoding the language of its authors'
-      ,complex_message = ' is clearly artificial and and intended to convey information. However it is so alien and complex that you cannot decode most of it'
-      ,noisy_message = ' is clearly artificial and and intended to convey information but is fragmented and corrupted so you only get a few snippets of contiguous data'
-    );
-    # randomly roll whether to append a hostile or friendly intent, or nothing at all.
-    # the probability of the wrong interpretation is higher for complex message and of a missing interpretation if higher for a noisy message
-    # use valueModFromTags() for this
-    # make a message with interpolated values 
-    out <-
-"After taveling ${10*ship$traveled} light year, the ${name} detects a 
-transmission coming from a system at ${formatCoords(ship$eventcache$nearestplanetcoords)}.
-It ${messagetypedisplay}."
-    str_interp(out) %>% str_wrap(width = 80);
-  }
-  ,choices=function(ship,node,...){
-    out <- thisnode$children;
-    # generate a dynamic choice
-    # randomly remove one of the choices
-    }
-  ,outcome=function(ship,node,...){
-    browser();
-    # add permanent tags to ship
-    # modify the nearest planet to have a high-tech civ
-    # tag that planet hostile or friendly
-  }
-);
-
+sector_name_grid <- import('data/constellation_names.tsv',header=F);
 
 # small helper functions ----
+
+# 
+distanceToDest <- function(ship){c(dist(rbind(ship$coords,ship$lastdestination)))};
+
+# Takes the midpoint between two locations and randomly perturbs it
+randomMidPoint <- function(coords,destination,scale=10){
+  points <- rbind(coords,destination);
+  midpoint <- colSums(points)/2;
+  distance <- dist(points);
+  deviate <- runif(3,-1,1)*scale/distance;
+  midpoint+deviate;
+}
 
 # Give sphCellNames a matrix or data.frame of string values as its 
 # sectors argument. Based on a set of
@@ -232,8 +189,11 @@ with.staRship <- function(data,expr,...){
   expr <- substitute(expr);
   with.default(mget(ls(data),data),eval(expr),...)};
 
-formatCoords <- function(coords,template='("%s")',sep='", "',numformat='%.3f'){
-  sprintf(template,paste0(sprintf(numformat,coords),collapse=sep))};
+formatCoords <- function(coords,template='(%s)',numformat='%.3f'){
+  sprintf(template,str_flatten_comma(sprintf(numformat,coords)))};
+
+# formatCoords <- function(coords,template='("%s")',sep='", "',numformat='%.3f'){
+#   sprintf(template,paste0(sprintf(numformat,coords),collapse=sep))};
 
 # conditionalUpdate <- function(data,valname,oldsuffix='_sensor',newsuffix='_sensor_current',finalsuffix='_sensor_final',infocol='info'){
 #   oldquality <- paste0(valname,oldsuffix);
@@ -243,7 +203,7 @@ formatCoords <- function(coords,template='("%s")',sep='", "',numformat='%.3f'){
 #   updates <- which(coalesce(data[[oldquality]],0) != data[[finalquality]]);
 # }
 
-shipLog <- function(description='${name} is at ${coords}, carrying ${colonists} colonists and ${probes} probes.
+shipLog <- function(description='${name} is at ${formatCoords(coords)}, carrying ${colonists} colonists and ${probes} probes.
 SENSORS
 atm: ${atmosphere_sensor}\tgrv: ${gravity_sensor}\th2o: ${water_sensor}\tres: ${resources_sensor}\ttmp: ${temperature_sensor}
 SYSTEMS
@@ -266,10 +226,10 @@ construction equipment: ${equipment}'
   # Presets automate creation of frequently ocurring log messages.
   switch(preset
          ,depart={
-           description<-'${name} departs from $[.3f]{coords}';
+           description<-'${name} departs from ${formatCoords(coords)}';
            tags<- c(tags,'transit')}
          ,arrive={
-           description<-'${name} arrives at $[.3f]{coords}';
+           description<-'${name} arrives at ${formatCoords(coords)}';
            tags<- c(tags,'arrival')}
          ,event={
            description<-'${name} experiences an event';
@@ -280,8 +240,12 @@ construction equipment: ${equipment}'
   if(preset %in% c('custom','depart') && !missing(target)){
     description <- paste(description, 'toward',formatCoords(target))}
   
-  description <- str_interp(description,mget(ls(ship),ship)) %>% 
-    gsub('c\\(\\"','("',.);
+  # Using the with(...) strategy instead of str_interp's env argument because
+  # otherwise it can't find either formatCoords() or the description object
+  description <- with(c(mget(ls(ship),ship),description=description)
+                      ,str_interp(description));
+  # description <- str_interp(description,mget(ls(ship),ship)) %>% 
+  #   gsub('c\\(\\"','("',.);
   
   tags <- paste0(na.omit(unique(tags)),collapse=';');
   log <- data.frame(description=description,tags=tags,stardate=stardate
@@ -304,7 +268,7 @@ prepStarChart <- function(ship,cols=c('distance','dst','x','y','z','visited'
   knownsystems$distance <- p3Distance(knownsystems[,c('x','y','z')],ship$coords);
   knownsystems <- arrange(knownsystems,distance) %>%
     cbind(extractPlanetInfo(knownsystems$info));
-  if(is.null(lastd<-ship$lastdestination)) knownsystems$dst <- '' else {
+  if(length(lastd<-ship$lastdestination)==0) knownsystems$dst <- '' else {
     lastd <- cbind(data.frame(as.list(ship$lastdestination) %>% 
                                 setNames(c('x','y','z'))),dst='>');
     knownsystems <- left_join(knownsystems,lastd) %>% 
@@ -328,6 +292,7 @@ or "r" to resume traveling to an existing destination.');
     selected <- readline('Row number: ');
   };
   if(grepl('^i',selected)){
+    # TODO: print a proper planet report here
     return(knownsystems[gsub('i','',selected),'info'][[1]])};
   switch(selected
          ,c=return()
@@ -378,9 +343,9 @@ parseVectorStrings <- function(xx,match=c()){
 
 nudgeShip <- function(ship,tolerance=1e-5){
   almosthere <- currentPlanet(ship,tolerance);
-  #almosthere <- prepStarChart(ship) %>% filter(distance>0 & distance < tolerance);
   if(NROW(almosthere)==0 || almosthere$distance==0) return(almosthere);
-  shipLog(str_interp("Minor orbital correction to $[.5f]{almosthere[1,c('x','y','z')]}"));
+  shipLog(str_interp("Minor orbital correction to ${formatCoords(almosthere[1,c('x','y','z')],numformat='%.5f')}"));
+  #shipLog(str_interp("Minor orbital correction to $[.5f]{almosthere[1,c('x','y','z')]}"));
   moveShip(ship,almosthere[1,c('x','y','z')],eventweight = 100,dologs=F,doscans=F);
   ship$state <- 'planet';
   return(almosthere);
@@ -390,7 +355,7 @@ nudgeShip <- function(ship,tolerance=1e-5){
 getShipNumericStats <- function(ship,stats=c('sensors','dbs','lgeq','colonists','probes'),onlygt0=F,hideNA=F){
   if('sensors' %in% stats) stats <- c(setdiff(stats,'sensors'),grep('_sensor$',names(ship),val=T));
   if('dbs' %in% stats) stats <- c(setdiff(stats,'dbs'),c('dbase','planetLocalDB'));
-  if('lgeq' %in% stats) stats <- c(setdiff(stats,'lgeq'),c('landing_gear','equipment'))
+  if('lgeq' %in% stats) stats <- c(setdiff(stats,'lgeq'),c('landing_gear','equipment'));
   stats <- unique(stats) %>% sapply(function(ii) if(is.data.frame(ship[[ii]])){
     nrow(ship[[ii]])} else as.numeric(unname(ship[[ii]])));
   if(onlygt0) stats <- stats[stats>0];
@@ -398,7 +363,7 @@ getShipNumericStats <- function(ship,stats=c('sensors','dbs','lgeq','colonists',
   stats;
 }
 
-damageShip <- function(ship,max_systems=3
+damageShip <- function(ship,max_systems=3,min_systems=1
                        # all of these arguments can be named vectors with one
                        # item named 'default'. In those cases, damageable items
                        # matching a name get that value, the rest get the 
@@ -417,10 +382,11 @@ damageShip <- function(ship,max_systems=3
     # TODO: have damage spill over into hull instead
     return(c(nothing=0));
   }
+  if(min_systems>max_systems) max_systems <- min_systems;
   if(length(intersect(damageable,c('sensors','dbs','lgeq')))>0){
     damageable <- names(getShipNumericStats(ship,damageable,hideNA = TRUE))};
   # number of different systems damaged
-  n_systems <- sample(1:min(max_systems,length(damageable)),1);
+  n_systems <- sample(max(0,min_systems):min(max_systems,length(damageable)),1);
   n_actual_systems <- 
   # Expand min_damage argument to the length of damageable. If no values named 
   # 'default', use 0. Then overwrite any matching named values.
@@ -472,7 +438,7 @@ damageShip <- function(ship,max_systems=3
     if(.planetLocalDBdmg>0){
       ship$planetLocalDB <- slice_sample(ship$planetLocalDB
                                          , prop=1-.planetLocalDBdmg);
-      shipLog(str_interp('The planet database was damaged and lost $[.2f]{.planetLocalDBdmg*100} of its data')
+      shipLog(str_interp('The planet database was damaged and lost $[.2f]{.planetLocalDBdmg*100}% of its data')
               ,tags='damage');
     }
     damaged <- damaged[c(setdiff(names(damaged),'planetLocalDB'))];
@@ -499,17 +465,18 @@ updateShip <- function(ship,tagsdb){
 }
 
 # big functions ----
-newShip <- function(...) {
+newShip <- function(name='Earthseed',...) {
   # Create list to store ship variables
   args <- list(...);
   ship <- list(
     # Set default values for variables
-    water_sensor = 50,atmosphere_sensor = 50,gravity_sensor = 50,temperature_sensor = 50,resources_sensor = 50
+    shipid = digest::sha1(name,Sys.time())
+    ,water_sensor = 50,atmosphere_sensor = 50,gravity_sensor = 50,temperature_sensor = 50,resources_sensor = 50
     ,colonists = 10000
     ,dbase = 50,equipment = 100,landing_gear = 100,probes = 10
     ,coords = c(0, 0, 0)
     ,state = 'space'
-    ,name = 'Earthseed'
+    ,name = name
     ,traveled = 0
     ,planetLocalDB = data.frame(
       x = numeric(0), y = numeric(0), z = numeric(0),
@@ -641,13 +608,14 @@ shipReport <- function(ship,...){
   # planetLocalDB taking damage
   scanPlanets(ship);
   with(ship,switch(state,planet='orbiting ${currentPlanet(self)$info[[1]]$description}'
-                  ,space=if(!exists('lastdestination')) 'drifting in space' else 'heading toward $[.3f]{lastdestination}'
+                  ,space=if(!exists('lastdestination')) 'drifting in space' else 'heading toward ${formatCoords(lastdestination)} $[.1f]{distanceToDest(self)} LY away'
                   ,event='experiencing an event') %>% 
-         paste0('${name} is in the ${sphCellNames(coords)} sector at $[.3f]{coords}, ', .) %>% str_interp() ) %>% 
+         paste0('${name} is in the ${sphCellNames(coords)} sector at ${formatCoords(coords)}, ', .) %>% str_interp() ) %>% 
     gsub('c\\(\\"','("',.) %>% message;
-  cbind(getShipNumericStats(ship,c('colonists','probes','sensors','dbs','lgeq','traveled'))) %>% 
+  out <- cbind(getShipNumericStats(ship,c('colonists','probes','sensors','dbs','lgeq','traveled'))) %>% 
     as.data.frame %>% setNames('status') %>% print;
   cat('\n');
+  out;
 }
 
 planetReport <- function(planetrow,...){
@@ -824,10 +792,54 @@ scanPlanets <- function(ship,tolerance=1e-5,autonudge=T,...){
                                         ,planets2[,names(ship$planetLocalDB)]);
 }
 
-planetReport <- function(ship){
-  nudgeShip(ship);
-  starchart <- prepStarChart(ship,NA) %>% subset(distance==0);
+planetReport <- function(ship,coords){
+  if(!missing(coords)){
+    if(length(coords)!=3||!is.numeric(coords)){warning('Invalid coordinates, ignored');return(NULL)};
+    coords <- rbind(coords) %>% data.frame %>% setNames(c('x','y','z'));
+    starchart <- inner_join(ship$planetLocalDB,coords);
+    if(NROW(starchart) == 0){warning('No planet found at these coordinates, ignored'); return(NULL)};
+  } else {
+    nudgeShip(ship);
+    starchart <- prepStarChart(ship,NA) %>% subset(distance==0);
+  }
   print(starchart);
+}
+
+renamePlanet <- function(coords,name='New Name',...){
+  # screw it... for now, if you're colonizing a planet you get to rename that planet
+  # validate name -- no cuss words, no code injection
+  # pull out planets from planetGlobalDB and planetLocalDB.
+  # localplanet$name <- globalplanet$name <- name;
+}
+
+colonizePlanet <- function(ship,...){
+  planet <- currentPlanet(ship);
+  #if(nrow(planet)==0)
+  # If specified, add planet name to planetGlobalDB (and planetLocalDB probably)
+  # Add a note to planetGlobalDB saying whom it was settled by and when
+  # max_damage <- 100 - ship$landing_gear, with min_systems = all of them
+  # Output text regarding landing and description of new planet
+  # Kill off some colonists during construction 
+  # based on how harsh the planet is and how badly damaged the construction system is.
+  # Diminish lethality with good anomalies
+  # Output text.
+  # Kill even more colonists with bad anomalies
+  # Output text.
+  # If planet and/or construction system are bad enough, 
+  # kill some extra colonists with construction failure
+  # Output text.
+  # Colonists go exploring ruins, with good and bad outcomes
+  # Output text.
+  # Do native relations
+  # Output text
+  # Any other specials
+  # Calculate final number of surviving colonists
+  # Calculate final tech level
+  # Calculate final culture level
+  # Write final description of colony
+  # Prompt to rename planet
+  # Calculate score and present
+  # Update planetGlobalDB with a natives or ruins anomaly basing stats and flavor on player
 }
 
 # Event loop ----
@@ -973,8 +985,11 @@ shipLoop <- function(ship,doStarChart=T,...){
                         ,'Ship report');
     if(!is.null(ship$lastdestination)){
       generalchoices <- c('Continue to current destination',generalchoices)};
+    curplnt <- currentPlanet(ship);
+    if(nrow(curplnt)==0) ship$state <- 'space';
     if(ship$state == 'planet' && nudgeShip(ship)$visited<2){
-      generalchoices <- c(generalchoices,'Send probes to nearby planet')};
+      generalchoices <- c(generalchoices,'Send probes to nearby planet')
+      } else generalchoices <- c(generalchoices,'Rename nearby planet');
     donext <- select.list(generalchoices,title='What should we do next?');
     #browser();
     switch(donext
@@ -989,78 +1004,11 @@ shipLoop <- function(ship,doStarChart=T,...){
               ids<-rglStarChart(ship);}
            ,`Ship report`=shipReport(ship)
            ,`Send probes to nearby planet`=sendProbes(ship) # probes
+           ,`Rename nearby planet`=renamePlanet(curplnt)
            );
     #browser();
   }
 }
-
-# import into the events data.frame
-# TODO: ...but what will happen when I populate shipstats and friends with
-#       named lists and vectors?
-events <- import('events.xlsx') %>%
-  mutate(across(!any_of(c('pathString','choicetext','parent','package','notes','shipstats','tags','eventtags','eventcache'))
-                ,~sapply(.x,function(xx){
-                  if(grepl('^function',as.character(xx))) {eval(str2lang(xx))} else xx
-                },simplify=F))
-         ,across(all_of(c('shipstats','tags','eventtags','eventcache'))
-                 ,~sapply(sprintf('list(%s)',coalesce(.x,'')),function(xx) eval(str2lang(xx))))
-         # unlike the other columns, baseprob has a numeri data type and needs to be converted
-         # back to numeric because the presence of functions in this column coerces it to a string
-         ,baseprob=sapply(baseprob,function(xx) if(is.character(xx) && !is.na(as.numeric(xx)[1])) as.numeric(xx) else xx)
-         );
-events$effect <- rowwise(events) %>%
-  mutate(effect=list(list(shipstats=shipstats,tags=tags
-                          ,eventtags=eventtags,eventcache=eventcache))) %>%
-  select(effect);
-
-
-
-
-eventnodes <- select(events,all_of(c('pathString','choicetext','baseprob'
-                                     ,'probmods','description'
-                                     ,'effect_function','effect','nchoices'
-                                     ,'dynchoices','autoadvance','package'))) %>% as.Node();
-eventnodes$Do(function(node){
-  iilist <- list();
-  for(ii in intersect(node$attributes,names(events))) {
-    iilist[[ii]] <- excavateList(node[[ii]])};
-  #if(node$name=='scanner') browser();
-  if(is.function(iilist$effect_function)){
-    iilist$effect <- iilist$effect_function} else{
-      iilist$effect <- iilist$effect;
-    }
-  iilist$effect_function <- NULL;
-  for(ii in names(iilist)) node[[ii]] <- iilist[[ii]];
-  node$RemoveAttribute('effect_function',stopIfNotAvailable=F)});
-# top-level nodes are chosen randomly one per event
-eventnodes$nchoices <- 1; 
-eventnodes$autoadvance <- TRUE;
-eventnodes$description <- '';
-
-
-
-
-
-foo <- newShip();
-shipLoop(foo);
-# basic event-loop sketch ----
-# to get a 3d starmap
-#ids <- rglStarChart(foo);
-# ids can then be used to catch mouse clicks
-#moveShip(foo,suppressWarnings(rglCoordCapture(ids)));ids<-rglStarChart(foo);
-# To keep moving after event interruption...
-#moveShip(foo);ids<-rglStarChart(foo);
-#promptNav(foo);
-
-
-# TODO 
-# DONE launch probes
-# DONE events
-# * Create actual event-trees and top-level event-selector
-# * colonization
-# * shiny integration
-
-# Design notes ----
 
 
 NULL
