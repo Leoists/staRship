@@ -1,0 +1,21 @@
+pathString	match	logmean	logearthmin	logearthoptimal	logearthmax	odds	min_fatalities	max_fatalities	fatality_text	mitigated_by
+params/temperature		6.2	5.4	5.7	5.8	function(tt) {dd<-tt-298; case_when(between(dd,-25,25)~0,dd>0~dd*.01,T~dd*-0.002)}				
+params/atmosphere										
+params/atmosphere/breathable	Breathable	0					0	0		
+params/atmosphere/marginal	Marginal	0.1					20	100		
+params/atmosphere/nonbreathable	Non-breathable	0.2					30	150		
+params/atmosphere/toxic	Toxic	0.4					40	200		
+params/atmosphere/corrosive	Corrosive	0.5					50	250		
+params/atmosphere/none	No atmosphere	0.2					30	150		
+params/gravity		-4.2	-6.5	-5.8	-5.1					
+params/water										
+params/water/oceans	Oceans	0								
+params/water/icecaps	Ice caps	0								
+params/planetocean	Planet-wide ocean	0.03								
+params/water	Ice-covered surface	0.03								
+params/water/trace	Trace	0.1								
+params/water/none	No water	0.5								
+params/resources										
+params/resources/none	No resources									
+params/resources/poor	Poor									
+params/resources/rich	Rich									

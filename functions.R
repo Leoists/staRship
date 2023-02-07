@@ -25,7 +25,31 @@ sector_name_grid <- import('data/constellation_names.tsv',header=F);
 
 # small helper functions ----
 
-# 
+# for turning numeric planetary parameters into odds for nodds()
+# temperature: ref = 298, normal_lo = -25, normal_hi = 25, coef_lo = 0.002, coef_hi = 0.01
+# gravity:     ref = 1, normal_lo = -0.2, normal_hi = 0.5, coef_lo = 1, coef_hi  = 0.1
+# ref = earth value (298K, 1G), normal_lo & normal_hi = range where no extra fatalities occur
+# coef_lo & coef_hi: empirical tuning parameters reflecting the intuition that cold
+# and zero-G can't get any worse than living in outer space like the colonists 
+# have already been doing, but high gravity and temperature aren't bound in how
+# dangerous they become
+planetnum2odds <- function(var,ref=1,normal_lo=-1,normal_hi=1,coef_lo=1,coef_hi=1){
+  delta <- var - ref; 
+  case_when(between(delta,normal_lo,normal_hi)~0
+            ,delta>0,(delta*coef_hi)^2
+            ,TRUE~delta*-coef_lo)};
+
+# N-odds
+# Let's say an event has a base odds of 1 for happening. Now some modifier
+# doubles those odds. Now another modifier halves them. You can see how you can
+# stack on an unlimited number of modifiers in both directions and you can go
+# from very large odds to very small ones, never quite reaching zero. But how
+# do these odds translate into the number of colonists that get killed? This
+# function is an attempt to do that. nn is the number at risk.
+# Example: nodds(10000,5000) doesn't quite kill off all 10,000 colonists
+# Example: nodds(10000,1/5000) the inverse odds of that still kills a few 
+nodds <- function(nn,prob){mapply(function(aa,bb) sum(sample(0:1,aa,rep=T,prob=c(1,bb))),nn,prob)}
+
 distanceToDest <- function(ship){c(dist(rbind(ship$coords,ship$lastdestination)))};
 
 # Takes the midpoint between two locations and randomly perturbs it
@@ -517,6 +541,7 @@ sendProbes <- function(ship){
   }
   # get the accurate planet info
   fullplanetinfo <- right_join(planetGlobalDB,nearbyplanet[,c('x','y','z')])$info[[1]];
+  for(ii in fullplanetinfo$anomalies$description) shipLog(ii,tag='probe');
   # but only the anomaly and code fields are needed... now the more accurate ones
   fullplanetinfo$anomalies <- transmute(fullplanetinfo$anomalies,anomaly=details,code=code);
   # overwrite the old planet info with the new in the ship database
@@ -526,8 +551,6 @@ sendProbes <- function(ship){
   ship$probes <- ship$probes - 1;
   shipLog('${name} has sent probes to explore a new planet. ${probes} remain.',tags='probes');
   # TODO: come up with a more dramatic exposition when planet anomalies are done
-  # TODO: give user opportunity to rename the planet by changing its name param
-  #       ...including in planetGlobalDB!
   return(fullplanetinfo);
 }
 
@@ -616,10 +639,6 @@ shipReport <- function(ship,...){
     as.data.frame %>% setNames('status') %>% print;
   cat('\n');
   out;
-}
-
-planetReport <- function(planetrow,...){
-  # nicely formatted planet info, planetrow is an entire row from ship$planetLocalDB
 }
 
 generateAnomaly <- function(planetinfo,anomdata=anomalies) {
@@ -814,12 +833,54 @@ renamePlanet <- function(coords,name='New Name',...){
 
 colonizePlanet <- function(ship,...){
   planet <- currentPlanet(ship);
-  #if(nrow(planet)==0)
+  if(nrow(planet)==0){
+    warning('There is no planet to colonize at the current location.');
+    return(NULL);
+  };
+  fullplanetinfo <- right_join(planetGlobalDB,planet[,c('x','y','z')])$info[[1]];
+  shipLog("This is the beginning of your journey's end! ${name} has stared its deorbit process. 
+The modules uncouple from each other and deploy their reentry shields. Time to 
+put that landing gear you've been protecting your whole journey to its first and
+only test...");
   # If specified, add planet name to planetGlobalDB (and planetLocalDB probably)
   # Add a note to planetGlobalDB saying whom it was settled by and when
-  # max_damage <- 100 - ship$landing_gear, with min_systems = all of them
+  n_systems <- length(shipstats <- getShipNumericStats(ship));
+  dmg_landing <- damageShip(ship,max_systems = n_systems,max_damage = 100 - ship$landing_gear);
   # Output text regarding landing and description of new planet
-  # Kill off some colonists during construction 
+  # Kill off some colonists during construction ... by planetary conditions and anomalies
+  # Discretize each of atmosphere, gravity, temperature, water into an odd number of levels with 0 in the middle
+  #   0 means no effect. One level above or below = moderate fatalities, two levels = higher fatalities and so on.
+  #   For each of these, log an event and kill off some colonists. The fatalities 
+  #   can be mitigated by certain anomalies as well as construction equipment
+  temp_maxdmg <- with(fullplanetinfo,case_when(temperature < 250 ~500
+                                               , temperature < 283 ~100
+                                               , temperature < 338 ~0
+                                               , temperature < 373 ~ 100
+                                               , TRUE ~ 500));
+  # Generate and log planet landing description based on TGAW
+  
+  # Describe what the colonists start building based on TGAW
+  
+  # Each bad anomaly takes its toll (TODO)
+  # No. For each of temperature, gravity, atmosphere, and water...
+  # calculate the odds
+  # divide by ship$equipment
+  # divide by any anomalies or tags that mitigate this
+  # multiply by any anomalies or tags that worsen this
+  # send the final odds to nodds
+  # Kill off that many colonists and log their passing
+  
+  # For each of temperature, gravity, atmosphere, and water roll against 
+  # ship$equipment to see if there is a structural failure. If there is, repeat
+  # the colonist deaths, but with the odds divided by half.
+  
+  # Post-construction anomalies take effect
+  
+  # Then, do natives
+  
+  # So, anomalies.tsv should have a column for how it affects min_damage and 
+  # max_damage during the construction phase, along with flavor text.
+  # Same for exploration phase.
   # based on how harsh the planet is and how badly damaged the construction system is.
   # Diminish lethality with good anomalies
   # Output text.
