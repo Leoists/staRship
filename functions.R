@@ -352,12 +352,10 @@ rglStarChart <- function(ship,size=5,herecol='orange',...){
 }
 
 rglCoordCapture <- function(rglids){
-  out <- c(0,0,0); thisenv <- environment();
-  selectpoints3d(rglids['data'],multiple=function(xx){
-    print(xx);
-    thisenv$out <- rbind(thisenv$out,xx);
-  });
-  out[2,]; 
+  # keep waiting for the user to make a valid selection
+  while(is((out <- try(selectpoints3d(rglids['data']),silent = T)),'try-error')) next;
+  # if there were several points within the selection, pick the last one
+  tail(out,1); 
 }
 
 parseVectorStrings <- function(xx,match=c()){
