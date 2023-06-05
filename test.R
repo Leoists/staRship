@@ -55,6 +55,9 @@ foo <- newShip();
 # shipLoop is basically the rest of the game
 shipLoop(foo);
 
+# seedship clone, for inspiration:
+# https://github.com/kat1248/seedship/tree/master
+
 # TODO 
 # DONE launch probes
 # DONE events
