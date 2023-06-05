@@ -1,5 +1,6 @@
 library(dplyr);
 library(stringr);
+library(pander); # for more readable console output
 library(rgl);
 library(rio);
 library(data.tree);
@@ -317,7 +318,9 @@ or "r" to resume traveling to an existing destination.');
   };
   if(grepl('^i',selected)){
     # TODO: print a proper planet report here
-    return(knownsystems[gsub('i','',selected),'info'][[1]])};
+    message('Planet report placeholder');
+    pander(planetinfo <- knownsystems[gsub('i','',selected),'info'][[1]]);
+    return(planetinfo)};
   switch(selected
          ,c=return()
          ,r=moveShip(ship)
