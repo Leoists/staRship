@@ -57,6 +57,8 @@ shipLoop(foo);
 
 # seedship clone, for inspiration:
 # https://github.com/kat1248/seedship/tree/master
+# seedship wiki
+# https://seedship.fandom.com/wiki/Special:AllPages
 
 # TODO 
 # DONE launch probes
